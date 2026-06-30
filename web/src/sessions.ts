@@ -56,7 +56,15 @@ function patchRow(id: string): void {
 function buildRow(s: SessionMeta): HTMLElement {
   const m = metricsMap.get(s.id);
   const pct = m?.contextPct ?? 0;
-  const total = m ? fmtNum(m.cumulative.total) : "—";
+  const c = m?.cumulative;
+  const total = c ? fmtNum(c.total) : "—";
+  // Most of "total" is loaded/cached context, not generated text. Surface the
+  // real breakdown on hover so the number isn't mistaken for "work done".
+  const tip = c
+    ? `생성(output) ${c.output.toLocaleString()} · 입력 ${c.input.toLocaleString()} · ` +
+      `캐시생성 ${c.cacheCreation.toLocaleString()} · 캐시읽기 ${c.cacheRead.toLocaleString()}\n` +
+      `대부분 프로젝트 컨텍스트(CLAUDE.md·rules·도구) 로드분`
+    : "토큰 사용량";
   const dotClass = DOT_CLASS[s.status] ?? "dot";
   const isSelected = s.id === selectedId;
 
@@ -67,7 +75,7 @@ function buildRow(s: SessionMeta): HTMLElement {
     <div class="row-header">
       <span class="${dotClass}"></span>
       <span class="row-title">${esc(s.title)}</span>
-      <span class="row-tokens">${total}</span>
+      <span class="row-tokens" title="${esc(tip)}">${total}</span>
       <button class="close-btn" title="Close">×</button>
     </div>
     <div class="ctx-track"><div class="ctx-fill" style="width:${pct}%;${fillColor(pct)}"></div></div>
