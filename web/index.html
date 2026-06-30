@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>cc-deck</title>
+  </head>
+  <body>
+    <div id="app">
+      <!-- Top bar: account usage ──────────────────────────────────────────── -->
+      <header id="usage-bar">
+        <div id="usage-windows">
+          <div class="usage-win">
+            <span class="win-label">5h</span>
+            <div class="bar-track"><div class="bar-fill green" id="bar5h"></div></div>
+            <span class="win-pct" id="pct5h">—</span>
+          </div>
+          <div class="usage-win">
+            <span class="win-label">7d</span>
+            <div class="bar-track"><div class="bar-fill green" id="bar7d"></div></div>
+            <span class="win-pct" id="pct7d">—</span>
+          </div>
+          <span id="reset-countdown"></span>
+          <span id="plan-badge"></span>
+          <span id="source-badge" class="badge badge-gray">—</span>
+        </div>
+        <button id="refresh-btn" title="Refresh usage">↻</button>
+      </header>
+
+      <!-- Body ────────────────────────────────────────────────────────────── -->
+      <div id="layout">
+        <!-- Sidebar: session list ─────────────────────────────────────────── -->
+        <aside id="sidebar">
+          <button id="new-session-btn">+ New Session</button>
+          <div id="new-session-form" class="hidden">
+            <input id="cwd-input" type="text" placeholder="e.g. C:/project/my-app" spellcheck="false" />
+            <div class="form-actions">
+              <button id="open-session-btn">Open</button>
+              <button id="cancel-session-btn">Cancel</button>
+            </div>
+          </div>
+          <div id="session-list"></div>
+        </aside>
+
+        <!-- Main: terminal + metrics strip ───────────────────────────────── -->
+        <main id="main">
+          <div id="terminal-container">
+            <div id="terminal-wrap"></div>
+            <div id="empty-state">Select or open a session to begin</div>
+          </div>
+          <div id="metrics-strip" class="hidden">
+            <span id="m-model">—</span>
+            <span class="sep">·</span>
+            <span id="m-context">ctx —</span>
+            <span class="sep">·</span>
+            <span id="m-tokens">—</span>
+            <span class="sep">·</span>
+            <span id="m-progress">—</span>
+            <span class="sep">·</span>
+            <span id="m-turns">— turns</span>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div id="toast-container"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
