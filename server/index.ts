@@ -132,8 +132,15 @@ if (fs.existsSync(config.paths.webDist)) {
 try {
   await app.listen({ host: config.host, port: config.port });
   const url = `http://${config.host}:${config.port}`;
-  console.log(`\n  🎛️  cc-deck listening on ${url}`);
-  console.log(`     dev frontend: http://localhost:5273 (npm run dev)\n`);
+  if (config.isProd) {
+    // `npm start`: this process serves everything. Use 127.0.0.1 (not localhost)
+    // — localhost may resolve to IPv6 ::1, but we bind IPv4 loopback.
+    console.log(`\n  🎛️  cc-deck — open  ${url}\n`);
+  } else {
+    // `npm run dev`: open the Vite dev server; it proxies API + WS to this backend.
+    console.log(`\n  🎛️  cc-deck backend on ${url}`);
+    console.log(`     open the dev frontend → http://localhost:5273\n`);
+  }
 } catch (err) {
   console.error("Failed to start cc-deck:", err);
   process.exit(1);
