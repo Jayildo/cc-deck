@@ -6,6 +6,7 @@ import { connect, onMessage, send } from "./ws.js";
 import { initTerminalContainer, write, activate, getActiveId } from "./terminal.js";
 import { initSessions, updateSessions, updateSessionMetrics, setSelectedSession } from "./sessions.js";
 import { renderUsage } from "./usage.js";
+import { initProjectPicker, updateProjects } from "./projects.js";
 import { fmtNum, shortModel } from "./fmt.js";
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -16,6 +17,7 @@ const emptyState = document.getElementById("empty-state") as HTMLElement;
 const newBtn = document.getElementById("new-session-btn") as HTMLButtonElement;
 const newForm = document.getElementById("new-session-form") as HTMLElement;
 const cwdInput = document.getElementById("cwd-input") as HTMLInputElement;
+const pickerEl = document.getElementById("project-picker") as HTMLElement;
 const openBtn = document.getElementById("open-session-btn") as HTMLButtonElement;
 const cancelBtn = document.getElementById("cancel-session-btn") as HTMLButtonElement;
 const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
@@ -54,7 +56,10 @@ function selectSession(id: string): void {
 // ── New session form ──────────────────────────────────────────────────────────
 newBtn.addEventListener("click", () => {
   newForm.classList.toggle("hidden");
-  if (!newForm.classList.contains("hidden")) cwdInput.focus();
+  if (!newForm.classList.contains("hidden")) {
+    send({ t: "listProjects" }); // refresh recents in case sessions changed
+    cwdInput.focus();
+  }
 });
 
 cancelBtn.addEventListener("click", () => newForm.classList.add("hidden"));
@@ -91,10 +96,15 @@ onMessage((msg: ServerMsg) => {
     case "hello":
       updateSessions(msg.sessions);
       renderUsage(msg.usage);
+      updateProjects(msg.projects);
       break;
 
     case "sessions":
       updateSessions(msg.sessions);
+      break;
+
+    case "projects":
+      updateProjects(msg.projects);
       break;
 
     case "scrollback":
@@ -130,5 +140,9 @@ onMessage((msg: ServerMsg) => {
 void (async () => {
   initTerminalContainer(termWrap);
   initSessions(sessionListEl, selectSession);
+  initProjectPicker(pickerEl, (path) => {
+    send({ t: "open", cwd: path });
+    newForm.classList.add("hidden");
+  });
   await connect();
 })();

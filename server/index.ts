@@ -9,6 +9,7 @@ import { AUTH_TOKEN, isAllowedOrigin, tokenFromQuery, timingSafeEqual } from "./
 import { createSessionManager } from "./sessions.js";
 import { createMetricsEngine } from "./metrics.js";
 import { createUsagePoller } from "./usage.js";
+import { createProjectStore } from "./projects.js";
 import type { ClientMsg, ServerMsg } from "../shared/types.js";
 
 const VERSION = "0.1.0";
@@ -52,6 +53,8 @@ const usage = createUsagePoller({
 });
 usage.start();
 
+const projects = createProjectStore();
+
 // ── HTTP / WS server ──────────────────────────────────────────────────────────
 const app = Fastify({ logger: false });
 await app.register(websocket, { options: { maxPayload: 4 * 1024 * 1024 } });
@@ -62,7 +65,7 @@ await app.register(websocket, { options: { maxPayload: 4 * 1024 * 1024 } });
 app.get("/api/token", async () => ({ token: AUTH_TOKEN }));
 app.get("/api/health", async () => ({ ok: true, version: VERSION }));
 
-app.get("/ws", { websocket: true }, (socket, req) => {
+app.get("/ws", { websocket: true }, async (socket, req) => {
   if (!isAllowedOrigin(req.headers.origin)) {
     socket.close(1008, "origin");
     return;
@@ -81,7 +84,13 @@ app.get("/ws", { websocket: true }, (socket, req) => {
   };
   clients.add(client);
 
-  client.send({ t: "hello", version: VERSION, sessions: sessions.list(), usage: usage.get() });
+  client.send({
+    t: "hello",
+    version: VERSION,
+    sessions: sessions.list(),
+    usage: usage.get(),
+    projects: await projects.lists(),
+  });
 
   socket.on("message", async (raw: Buffer) => {
     let msg: ClientMsg;
@@ -94,6 +103,8 @@ app.get("/ws", { websocket: true }, (socket, req) => {
       switch (msg.t) {
         case "open":
           await sessions.open(msg.cwd, { title: msg.title });
+          await projects.noteOpened(msg.cwd);
+          broadcast({ t: "projects", projects: await projects.lists() });
           break;
         case "attach": {
           client.attached.add(msg.id);
@@ -114,6 +125,17 @@ app.get("/ws", { websocket: true }, (socket, req) => {
           break;
         case "refreshUsage":
           await usage.refreshNow();
+          break;
+        case "listProjects":
+          client.send({ t: "projects", projects: await projects.lists() });
+          break;
+        case "addFavorite":
+          await projects.addFavorite(msg.path);
+          broadcast({ t: "projects", projects: await projects.lists() });
+          break;
+        case "removeFavorite":
+          await projects.removeFavorite(msg.path);
+          broadcast({ t: "projects", projects: await projects.lists() });
           break;
       }
     } catch (err) {

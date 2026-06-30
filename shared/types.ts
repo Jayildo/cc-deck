@@ -87,6 +87,23 @@ export interface AccountUsage {
   error?: string;
 }
 
+// ── Project quick-pick (New Session) ─────────────────────────────────────────
+
+export interface ProjectRef {
+  /** Exact working directory, e.g. "C:\\project\\socp-erp". */
+  path: string;
+  /** Display label (known project name or basename). */
+  label: string;
+  /** epoch ms of last use (recent list only). */
+  lastUsed?: number;
+  favorite?: boolean;
+}
+
+export interface ProjectLists {
+  favorites: ProjectRef[];
+  recent: ProjectRef[];
+}
+
 // ── WebSocket protocol ───────────────────────────────────────────────────────
 
 /** Messages the browser sends to the server. */
@@ -96,12 +113,16 @@ export type ClientMsg =
   | { t: "input"; id: string; data: string }
   | { t: "resize"; id: string; cols: number; rows: number }
   | { t: "close"; id: string }
-  | { t: "refreshUsage" };
+  | { t: "refreshUsage" }
+  | { t: "listProjects" }
+  | { t: "addFavorite"; path: string }
+  | { t: "removeFavorite"; path: string };
 
 /** Messages the server pushes to the browser. */
 export type ServerMsg =
-  | { t: "hello"; version: string; sessions: SessionMeta[]; usage: AccountUsage }
+  | { t: "hello"; version: string; sessions: SessionMeta[]; usage: AccountUsage; projects: ProjectLists }
   | { t: "sessions"; sessions: SessionMeta[] }
+  | { t: "projects"; projects: ProjectLists }
   | { t: "scrollback"; id: string; data: string } // sent on attach
   | { t: "pty"; id: string; data: string }
   | { t: "metrics"; metrics: SessionMetrics }
