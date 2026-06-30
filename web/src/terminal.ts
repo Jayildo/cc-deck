@@ -94,6 +94,10 @@ export function getActiveId(): string | null {
   return activeId;
 }
 
+export function terminalIds(): string[] {
+  return [...terms.keys()];
+}
+
 export function disposeTerminal(id: string): void {
   const entry = terms.get(id);
   if (!entry) return;

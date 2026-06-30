@@ -1,9 +1,9 @@
 import "@xterm/xterm/css/xterm.css";
 import "../style.css";
 
-import type { ServerMsg, SessionMetrics } from "../../shared/types";
+import type { ServerMsg, SessionMetrics, SessionMeta } from "../../shared/types";
 import { connect, onMessage, send } from "./ws.js";
-import { initTerminalContainer, write, activate, getActiveId } from "./terminal.js";
+import { initTerminalContainer, write, activate, getActiveId, disposeTerminal, terminalIds } from "./terminal.js";
 import { initSessions, updateSessions, updateSessionMetrics, setSelectedSession } from "./sessions.js";
 import { renderUsage } from "./usage.js";
 import { initProjectPicker, updateProjects } from "./projects.js";
@@ -53,6 +53,19 @@ function selectSession(id: string): void {
   if (m) showMetrics(m);
 }
 
+// When sessions disappear from the list (closed via ×), dispose their terminals;
+// if the active session is the one that went away, reset the pane to empty.
+function reconcileClosed(list: SessionMeta[]): void {
+  const live = new Set(list.map((s) => s.id));
+  for (const id of terminalIds()) {
+    if (!live.has(id)) disposeTerminal(id); // clears activeId if it was active
+  }
+  if (!getActiveId()) {
+    emptyState.style.display = "";
+    metricsStrip.classList.add("hidden");
+  }
+}
+
 // ── New session form ──────────────────────────────────────────────────────────
 newBtn.addEventListener("click", () => {
   newForm.classList.toggle("hidden");
@@ -97,10 +110,12 @@ onMessage((msg: ServerMsg) => {
       updateSessions(msg.sessions);
       renderUsage(msg.usage);
       updateProjects(msg.projects);
+      reconcileClosed(msg.sessions);
       break;
 
     case "sessions":
       updateSessions(msg.sessions);
+      reconcileClosed(msg.sessions);
       break;
 
     case "projects":
