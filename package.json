@@ -12,6 +12,8 @@
     "start": "cross-env NODE_ENV=production tsx server/index.ts",
     "install:statusline": "node scripts/install-statusline-tee.mjs",
     "uninstall:statusline": "node scripts/uninstall-statusline-tee.mjs",
+    "install:autostart": "node scripts/install-autostart.mjs",
+    "uninstall:autostart": "node scripts/uninstall-autostart.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
