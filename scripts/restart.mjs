@@ -22,10 +22,12 @@ try {
   /* netstat failed */
 }
 
+let killed = false;
 if (pid && /^\d+$/.test(pid)) {
   try {
     execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore" });
     console.log(`stopped server (pid ${pid}) on :${PORT}`);
+    killed = true;
   } catch {
     console.log(`could not stop pid ${pid}`);
   }
@@ -42,9 +44,16 @@ const vbs = path.join(
   "Startup",
   "cc-deck-autostart.vbs"
 );
-if (fs.existsSync(vbs)) {
-  spawn("wscript", [vbs], { detached: true, stdio: "ignore", windowsHide: true }).unref();
-  console.log(`relaunched hidden server → http://localhost:${PORT}`);
-} else {
-  console.log("autostart .vbs not found — run `npm run install:autostart` first, or `npm start`.");
+
+function relaunch() {
+  if (fs.existsSync(vbs)) {
+    spawn("wscript", [vbs], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    console.log(`relaunched hidden server → http://localhost:${PORT}`);
+  } else {
+    console.log("autostart .vbs not found — run `npm run install:autostart` first, or `npm start`.");
+  }
 }
+
+// Give the OS a moment to release the port before rebinding.
+if (killed) setTimeout(relaunch, 1500);
+else relaunch();
