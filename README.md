@@ -14,7 +14,7 @@ talk to any third-party service.
 
 ```bash
 npm install
-npm run dev      # backend (4317) + Vite frontend (5173) — open http://localhost:5173
+npm run dev      # backend (4317) + Vite frontend (5273) — open http://localhost:5273
 ```
 
 Production (single process serving a built frontend):

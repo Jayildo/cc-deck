@@ -133,7 +133,7 @@ try {
   await app.listen({ host: config.host, port: config.port });
   const url = `http://${config.host}:${config.port}`;
   console.log(`\n  🎛️  cc-deck listening on ${url}`);
-  console.log(`     dev frontend: http://localhost:5173 (npm run dev)\n`);
+  console.log(`     dev frontend: http://localhost:5273 (npm run dev)\n`);
 } catch (err) {
   console.error("Failed to start cc-deck:", err);
   process.exit(1);

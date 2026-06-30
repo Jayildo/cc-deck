@@ -49,7 +49,7 @@ no module imports another. Two WS channels: `pty` (raw bytes ↔ xterm.js) and
 
 ## Run
 
-`npm run dev` (server 4317 + Vite 5173 → open http://localhost:5173) ·
+`npm run dev` (server 4317 + Vite 5273 → open http://localhost:5273) ·
 `npm run build && npm start` (single process on 4317). ·
 `npm run install:statusline` to enable the live statusline feed (reversible).
 

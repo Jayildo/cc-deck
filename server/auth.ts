@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import { config } from "./config.js";
 
 /**
  * Single per-launch bearer token. cc-deck binds to 127.0.0.1, but a token + WS
@@ -18,18 +17,19 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ba, bb);
 }
 
-const allowedOrigins = new Set([
-  `http://127.0.0.1:${config.port}`,
-  `http://localhost:${config.port}`,
-  // Vite dev server (dev only):
-  "http://127.0.0.1:5173",
-  "http://localhost:5173",
-]);
+const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
 export function isAllowedOrigin(origin: string | undefined): boolean {
-  // Non-browser clients (no Origin header) are allowed; browsers must match.
+  // Non-browser clients (no Origin header) are allowed. Browsers must come from
+  // a loopback origin — but on ANY port, so the Vite dev port can change freely
+  // without breaking the WS handshake. The per-launch bearer token is the real
+  // gate; a remote origin (e.g. https://evil.com) is rejected here regardless.
   if (!origin) return true;
-  return allowedOrigins.has(origin);
+  try {
+    return LOCAL_HOSTS.has(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
 }
 
 export function tokenFromQuery(url: string | undefined): string | null {
