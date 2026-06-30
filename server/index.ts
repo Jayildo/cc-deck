@@ -59,6 +59,22 @@ const projects = createProjectStore();
 const app = Fastify({ logger: false });
 await app.register(websocket, { options: { maxPayload: 4 * 1024 * 1024 } });
 
+// Loopback-only guard. We bind dual-stack (::) so both http://localhost (IPv6
+// ::1) and http://127.0.0.1 (IPv4) reach the server, but we reject any non-
+// loopback peer — the dual-stack socket would otherwise be LAN-reachable and
+// /api/token is unauthenticated. Keeps cc-deck "a shell behind a token", local.
+function isLoopback(ip: string | undefined): boolean {
+  if (!ip) return false;
+  return ip === "::1" || ip === "::ffff:127.0.0.1" || ip.startsWith("127.");
+}
+app.addHook("onRequest", (req, reply, done) => {
+  if (!isLoopback(req.socket.remoteAddress ?? undefined)) {
+    reply.code(403).send({ error: "cc-deck is loopback-only" });
+    return;
+  }
+  done();
+});
+
 // Same-origin frontend fetches the launch token here. Cross-origin pages can
 // trigger this but cannot read the response (CORS); the WS Origin check is the
 // real gate. See server/auth.ts.
@@ -68,6 +84,10 @@ app.get("/api/health", async () => ({ ok: true, version: VERSION }));
 app.get("/ws", { websocket: true }, async (socket, req) => {
   if (!isAllowedOrigin(req.headers.origin)) {
     socket.close(1008, "origin");
+    return;
+  }
+  if (!isLoopback(req.socket.remoteAddress ?? undefined)) {
+    socket.close(1008, "loopback");
     return;
   }
   const token = tokenFromQuery(req.url);
@@ -152,12 +172,12 @@ if (fs.existsSync(config.paths.webDist)) {
 }
 
 try {
-  await app.listen({ host: config.host, port: config.port });
-  const url = `http://${config.host}:${config.port}`;
+  // Dual-stack loopback so both localhost (::1) and 127.0.0.1 work; the
+  // onRequest guard above keeps non-loopback peers out.
+  await app.listen({ host: "::", port: config.port, ipv6Only: false });
+  const url = `http://localhost:${config.port}`;
   if (config.isProd) {
-    // `npm start`: this process serves everything. Use 127.0.0.1 (not localhost)
-    // — localhost may resolve to IPv6 ::1, but we bind IPv4 loopback.
-    console.log(`\n  🎛️  cc-deck — open  ${url}\n`);
+    console.log(`\n  🎛️  cc-deck — open  ${url}   (or http://127.0.0.1:${config.port})\n`);
   } else {
     // `npm run dev`: open the Vite dev server; it proxies API + WS to this backend.
     console.log(`\n  🎛️  cc-deck backend on ${url}`);
