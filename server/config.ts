@@ -10,6 +10,9 @@ export const config = {
   /** How often the OAuth usage poller refreshes (ms). */
   usagePollMs: Number(process.env.CC_DECK_USAGE_POLL_MS ?? 60_000),
 
+  /** Local time (HH:MM) to auto-generate the daily report. */
+  reportTime: process.env.CC_DECK_REPORT_TIME ?? "23:30",
+
   /** Default shape for newly-spawned terminals. */
   defaultCols: 120,
   defaultRows: 30,

@@ -24,6 +24,7 @@
           <span id="plan-badge"></span>
           <span id="source-badge" class="badge badge-gray">—</span>
         </div>
+        <button id="report-btn" title="일일 업무일지">📋</button>
         <button id="refresh-btn" title="Refresh usage">↻</button>
       </header>
 
@@ -61,6 +62,22 @@
             <span id="m-turns">— turns</span>
           </div>
         </main>
+      </div>
+    </div>
+
+    <!-- Daily report modal ──────────────────────────────────────────────── -->
+    <div id="report-modal" class="hidden">
+      <div class="report-panel">
+        <div class="report-head">
+          <strong>📋 일일 업무일지</strong>
+          <button id="report-gen-btn">오늘 생성</button>
+          <span id="report-status"></span>
+          <button id="report-close" class="report-x" title="닫기">×</button>
+        </div>
+        <div class="report-body">
+          <div id="report-dates"></div>
+          <pre id="report-content">날짜를 선택하거나 '오늘 생성'을 누르세요.</pre>
+        </div>
       </div>
     </div>
 

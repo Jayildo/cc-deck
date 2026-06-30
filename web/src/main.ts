@@ -7,6 +7,7 @@ import { initTerminalContainer, write, activate, getActiveId, disposeTerminal, t
 import { initSessions, updateSessions, updateSessionMetrics, setSelectedSession } from "./sessions.js";
 import { renderUsage } from "./usage.js";
 import { initProjectPicker, updateProjects } from "./projects.js";
+import { initReports, setReports, showReport, setReportStatus } from "./reports.js";
 import { fmtNum, shortModel } from "./fmt.js";
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -145,6 +146,18 @@ onMessage((msg: ServerMsg) => {
       }
       break;
 
+    case "reports":
+      setReports(msg.dates);
+      break;
+
+    case "report":
+      showReport(msg.date, msg.markdown);
+      break;
+
+    case "reportStatus":
+      setReportStatus(msg.text, msg.busy);
+      break;
+
     case "error":
       showToast(msg.message);
       break;
@@ -159,5 +172,6 @@ void (async () => {
     send({ t: "open", cwd: path });
     newForm.classList.add("hidden");
   });
+  initReports();
   await connect();
 })();

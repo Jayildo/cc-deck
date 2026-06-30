@@ -10,6 +10,7 @@ import { createSessionManager } from "./sessions.js";
 import { createMetricsEngine } from "./metrics.js";
 import { createUsagePoller } from "./usage.js";
 import { createProjectStore } from "./projects.js";
+import { generateDailyReport, listReports, getReport, startReportScheduler } from "./reports.js";
 import type { ClientMsg, ServerMsg } from "../shared/types.js";
 
 const VERSION = "0.1.0";
@@ -54,6 +55,28 @@ const usage = createUsagePoller({
 usage.start();
 
 const projects = createProjectStore();
+
+// ── Daily report ──────────────────────────────────────────────────────────────
+let reportBusy = false;
+async function runReport(): Promise<void> {
+  if (reportBusy) {
+    broadcast({ t: "reportStatus", text: "이미 생성 중…", busy: true });
+    return;
+  }
+  reportBusy = true;
+  broadcast({ t: "reportStatus", text: "리포트 생성 시작…", busy: true });
+  try {
+    const r = await generateDailyReport((text) => broadcast({ t: "reportStatus", text, busy: true }));
+    broadcast({ t: "reports", dates: listReports() });
+    broadcast({ t: "report", date: r.date, markdown: r.markdown });
+    broadcast({ t: "reportStatus", text: `완료 — ${r.date}`, busy: false });
+  } catch (err) {
+    broadcast({ t: "reportStatus", text: `실패: ${String((err as Error)?.message ?? err)}`, busy: false });
+  } finally {
+    reportBusy = false;
+  }
+}
+const stopReportScheduler = startReportScheduler(config.reportTime, () => void runReport());
 
 // ── HTTP / WS server ──────────────────────────────────────────────────────────
 const app = Fastify({ logger: false });
@@ -157,6 +180,17 @@ app.get("/ws", { websocket: true }, async (socket, req) => {
           await projects.removeFavorite(msg.path);
           broadcast({ t: "projects", projects: await projects.lists() });
           break;
+        case "listReports":
+          client.send({ t: "reports", dates: listReports() });
+          break;
+        case "getReport": {
+          const md = await getReport(msg.date);
+          if (md != null) client.send({ t: "report", date: msg.date, markdown: md });
+          break;
+        }
+        case "generateReport":
+          void runReport();
+          break;
       }
     } catch (err) {
       client.send({ t: "error", message: String((err as Error)?.message ?? err) });
@@ -190,6 +224,7 @@ try {
 
 function shutdown() {
   usage.stop();
+  stopReportScheduler();
   sessions.dispose();
   metrics.dispose();
   app.close().finally(() => process.exit(0));

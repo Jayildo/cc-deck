@@ -116,7 +116,10 @@ export type ClientMsg =
   | { t: "refreshUsage" }
   | { t: "listProjects" }
   | { t: "addFavorite"; path: string }
-  | { t: "removeFavorite"; path: string };
+  | { t: "removeFavorite"; path: string }
+  | { t: "listReports" }
+  | { t: "getReport"; date: string }
+  | { t: "generateReport" };
 
 /** Messages the server pushes to the browser. */
 export type ServerMsg =
@@ -128,6 +131,9 @@ export type ServerMsg =
   | { t: "metrics"; metrics: SessionMetrics }
   | { t: "usage"; usage: AccountUsage }
   | { t: "exit"; id: string; code: number }
+  | { t: "reports"; dates: string[] }
+  | { t: "report"; date: string; markdown: string }
+  | { t: "reportStatus"; text: string; busy: boolean }
   | { t: "error"; message: string };
 
 // ── Backend module interfaces (handler-injection pattern) ────────────────────

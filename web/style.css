@@ -447,6 +447,109 @@ html, body {
   to   { transform: translateX(0);    opacity: 1; }
 }
 
+/* ── Daily report ────────────────────────────────────────────────────────── */
+#report-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
+}
+#report-btn:hover { background: var(--surface2); color: var(--text); }
+
+#report-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+#report-modal.hidden { display: none; }
+
+.report-panel {
+  width: min(900px, 92vw);
+  height: min(80vh, 760px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .5);
+}
+.report-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.report-head strong { font-size: 14px; }
+#report-gen-btn {
+  background: var(--blue);
+  border: 1px solid var(--blue);
+  color: #fff;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+#report-gen-btn:hover { opacity: .88; }
+#report-gen-btn:disabled { opacity: .5; cursor: default; }
+#report-status { font-size: 12px; color: var(--muted); flex: 1; }
+.report-x {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.report-x:hover { color: var(--text); }
+
+.report-body { flex: 1; display: flex; min-height: 0; }
+#report-dates {
+  width: 140px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 6px;
+}
+.report-date {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.report-date:hover { background: var(--surface2); color: var(--text); }
+.report-date.active { background: rgba(59, 130, 246, .14); color: var(--text); }
+.report-empty { color: var(--muted); font-size: 12px; padding: 10px 8px; }
+#report-content {
+  flex: 1;
+  margin: 0;
+  padding: 16px 20px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
 /* ── Scrollbar thinning ──────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
