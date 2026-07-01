@@ -12,7 +12,7 @@ session_by: claude
 
 ## 다음 할 일
 
-1. **GitHub private repo 생성 + push** — 아직 remote 없음(백업 미완). `gh repo create cc-deck --private --source . --push` 제안 → 사용자 승인 후 실행. (보안 기본값: private, 사용자 [[feedback_platform_security_defaults]] 참조)
+1. ✅ ~~GitHub private repo 생성 + push~~ — 완료: **`Jayildo/cc-deck` (private)**, remote `origin` 설정됨, main push 완료(2026-07-01).
 2. **데일리 리포트 `claude -p` PATH 재검증** — 재부팅 후 Startup .vbs가 clean 로그인 env에서 뜰 때 `claude`가 PATH에 잡히는지 확인. 안 잡히면 `server/reports.ts summarize()`에서 claude.cmd 절대경로(`%APPDATA%\npm\claude.cmd`) resolve.
 3. (선택) 리포트 모달 **마크다운 렌더**(현재 `<pre>` raw), UI 폴리시(사용량 바 여백/사이드바 위계).
 
