@@ -28,6 +28,20 @@ if (/fnm_multishells/i.test(nodeExe)) {
   );
 }
 
+const PORT = process.env.CC_DECK_PORT ?? "4317";
+const URL = `http://127.0.0.1:${PORT}`;
+
+function resolveChrome() {
+  const cands = [
+    path.join(process.env.ProgramFiles ?? "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+    path.join(process.env.LOCALAPPDATA ?? "", "Google", "Chrome", "Application", "chrome.exe"),
+  ];
+  for (const c of cands) if (c && fs.existsSync(c)) return c;
+  return "chrome"; // fall back to PATH / App Paths
+}
+const chromeExe = resolveChrome();
+
 const logPath = path.join(deckDir, "server.log");
 const cmdPath = path.join(deckDir, "run-server.cmd");
 const cmd =
@@ -39,6 +53,24 @@ const cmd =
   ].join("\r\n") + "\r\n";
 fs.writeFileSync(cmdPath, cmd, "utf8");
 
+// Opener: wait until the server answers, then open it in Chrome.
+const openCmdPath = path.join(deckDir, "open-dashboard.cmd");
+const openCmd =
+  [
+    "@echo off",
+    `set "URL=${URL}"`,
+    "set /a n=0",
+    ":wait",
+    'curl -s -o nul --max-time 2 "%URL%/api/health" && goto open',
+    "set /a n+=1",
+    "if %n% geq 30 goto open",
+    "ping -n 2 127.0.0.1 >nul",
+    "goto wait",
+    ":open",
+    `start "" "${chromeExe}" "%URL%"`,
+  ].join("\r\n") + "\r\n";
+fs.writeFileSync(openCmdPath, openCmd, "utf8");
+
 const startupDir = path.join(
   process.env.APPDATA ?? path.join(home, "AppData", "Roaming"),
   "Microsoft",
@@ -49,14 +81,19 @@ const startupDir = path.join(
 );
 fs.mkdirSync(startupDir, { recursive: true });
 const vbsPath = path.join(startupDir, "cc-deck-autostart.vbs");
-fs.writeFileSync(vbsPath, `CreateObject("WScript.Shell").Run """${cmdPath}""", 0, False\r\n`, "utf8");
+const vbs =
+  `Set sh = CreateObject("WScript.Shell")\r\n` +
+  `sh.Run """${cmdPath}""", 0, False\r\n` + // start server (hidden)
+  `sh.Run """${openCmdPath}""", 0, False\r\n`; // wait + open Chrome (hidden launcher, visible browser)
+fs.writeFileSync(vbsPath, vbs, "utf8");
 
 console.log("✅ cc-deck autostart installed.\n");
 console.log("   launcher : " + cmdPath);
+console.log("   opener   : " + openCmdPath);
 console.log("   startup  : " + vbsPath);
 console.log("   node     : " + nodeExe);
+console.log("   chrome   : " + chromeExe);
 console.log("   log      : " + logPath + "\n");
-console.log("On next login it starts hidden → open http://localhost:4317");
-console.log('Start it now (no reboot):  wscript "' + vbsPath + '"');
-console.log("   (stop any manual `npm start` first so port 4317 is free)\n");
+console.log(`On next login: server starts hidden AND Chrome opens ${URL} automatically.`);
+console.log(`Open the dashboard now (server already running):  "${openCmdPath}"`);
 console.log("Remove:  npm run uninstall:autostart");
