@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
@@ -80,7 +82,8 @@ const stopReportScheduler = startReportScheduler(config.reportTime, () => void r
 
 // ── HTTP / WS server ──────────────────────────────────────────────────────────
 const app = Fastify({ logger: false });
-await app.register(websocket, { options: { maxPayload: 4 * 1024 * 1024 } });
+// 16 MB so a pasted screenshot (base64 ≈ 1.33× its bytes) fits in one frame.
+await app.register(websocket, { options: { maxPayload: 16 * 1024 * 1024 } });
 
 // Loopback-only guard. We bind dual-stack (::) so both http://localhost (IPv6
 // ::1) and http://127.0.0.1 (IPv4) reach the server, but we reject any non-
@@ -144,11 +147,16 @@ app.get("/ws", { websocket: true }, async (socket, req) => {
     }
     try {
       switch (msg.t) {
-        case "open":
-          await sessions.open(msg.cwd, { title: msg.title });
+        case "open": {
+          const meta = await sessions.open(msg.cwd, { title: msg.title });
+          // Tell just this client which session it opened so it can auto-select
+          // it. The "sessions" broadcast fired inside open() already added the
+          // row; this arrives after, so the row exists by the time we select it.
+          client.send({ t: "opened", id: meta.id });
           await projects.noteOpened(msg.cwd);
           broadcast({ t: "projects", projects: await projects.lists() });
           break;
+        }
         case "attach": {
           client.attached.add(msg.id);
           const a = sessions.attach(msg.id);
@@ -160,6 +168,19 @@ app.get("/ws", { websocket: true }, async (socket, req) => {
         case "input":
           sessions.input(msg.id, msg.data);
           break;
+        case "pasteImage": {
+          // Browser terminals can't hand a pasted image bitmap to the PTY, so
+          // the frontend ships us the bytes; we save them and type the file
+          // path into the session (no CR → doesn't submit). Forward slashes so
+          // the Windows path doesn't collide with Claude Code's "\"+Enter.
+          const okExt = ["png", "jpg", "jpeg", "gif", "webp"];
+          const ext = okExt.includes(msg.ext) ? msg.ext : "png";
+          await fsp.mkdir(config.paths.pasteDir, { recursive: true });
+          const file = path.join(config.paths.pasteDir, `paste-${Date.now()}.${ext}`);
+          await fsp.writeFile(file, Buffer.from(msg.dataB64, "base64"));
+          sessions.input(msg.id, file.replace(/\\/g, "/") + " ");
+          break;
+        }
         case "resize":
           sessions.resize(msg.id, msg.cols, msg.rows);
           break;

@@ -284,6 +284,13 @@ html, body {
   background: rgba(59,130,246,.08);
   border-left-color: var(--blue);
 }
+/* keyboard-nav cursor — a full inset ring, distinct from the .selected left-border */
+.session-row.cursor {
+  box-shadow: inset 0 0 0 2px var(--blue);
+}
+#session-list:focus {
+  outline: none; /* the .cursor ring is the focus indicator */
+}
 
 .row-header {
   display: flex;
@@ -324,16 +331,25 @@ html, body {
 }
 
 .ctx-track {
-  height: 3px;
+  height: 6px;
   background: var(--surface2);
-  border-radius: 2px;
+  border-radius: 4px;
   overflow: hidden;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, .4); /* recessed XP-bar groove */
 }
 .ctx-fill {
   height: 100%;
-  border-radius: 2px;
-  transition: width .5s ease;
-  background: var(--green);
+  border-radius: 4px;
+  /* hue comes from the inline --c (see fillColor); falls back to green */
+  background-color: var(--c, var(--green));
+  /* glossy top highlight → darker bottom, so the fill reads like an XP bar */
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, .35),
+    rgba(255, 255, 255, .05) 45%,
+    rgba(0, 0, 0, .18)
+  );
+  transition: width .5s ease, background-color .4s ease;
 }
 
 .close-btn {

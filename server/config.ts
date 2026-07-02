@@ -30,16 +30,18 @@ export const config = {
     /** cc-deck's own state dir. */
     deckDir: path.join(HOME, ".cc-deck"),
     usageCache: path.join(HOME, ".cc-deck", "usage-cache.json"),
+    /** Where pasted clipboard images are written before their path is typed into a session. */
+    pasteDir: path.join(HOME, ".cc-deck", "paste"),
     /** Where the (optional) statusline tee appends live render payloads. */
     statuslineFeed: path.join(HOME, ".cc-deck", "statusline-feed.jsonl"),
     /** Built frontend served in production. */
     webDist: path.resolve(import.meta.dirname, "..", "web", "dist"),
   },
 
-  /** Known context-window sizes by model family. */
+  /** Known context-window sizes by model family (see util.contextWindowFor). */
   contextWindows: {
-    big: 1_000_000, // [1m] / opus-4-6 / sonnet-4-6
-    default: 200_000,
+    big: 1_000_000, // Opus 4.6/4.7/4.8, Sonnet 4.6/5, Fable/Mythos 5, or [1m] beta
+    default: 200_000, // Haiku and older/unknown models
   },
 
   /** Anthropic OAuth usage endpoint (undocumented; may change). */

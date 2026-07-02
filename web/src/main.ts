@@ -3,8 +3,8 @@ import "../style.css";
 
 import type { ServerMsg, SessionMetrics, SessionMeta } from "../../shared/types";
 import { connect, onMessage, send } from "./ws.js";
-import { initTerminalContainer, write, activate, getActiveId, disposeTerminal, terminalIds } from "./terminal.js";
-import { initSessions, updateSessions, updateSessionMetrics, setSelectedSession } from "./sessions.js";
+import { initTerminalContainer, write, activate, getActiveId, disposeTerminal, terminalIds, focusTerminal } from "./terminal.js";
+import { initSessions, updateSessions, updateSessionMetrics, setSelectedSession, focusSidebar, clearCursor } from "./sessions.js";
 import { renderUsage } from "./usage.js";
 import { initProjectPicker, updateProjects } from "./projects.js";
 import { initReports, setReports, showReport, setReportStatus } from "./reports.js";
@@ -45,13 +45,21 @@ function showMetrics(m: SessionMetrics): void {
 
 // ── Session selection ─────────────────────────────────────────────────────────
 function selectSession(id: string): void {
+  const wasActive = getActiveId() === id;
   setSelectedSession(id);
-  send({ t: "attach", id });
+  if (!wasActive) send({ t: "attach", id }); // re-attaching replays scrollback → skip if already shown
   activate(id);
   emptyState.style.display = "none";
   metricsStrip.classList.remove("hidden");
   const m = latestMetrics.get(id);
   if (m) showMetrics(m);
+}
+
+// Keyboard: Enter on a sidebar row — select it and drop focus into the terminal.
+function enterSession(id: string): void {
+  selectSession(id);
+  clearCursor();
+  focusTerminal();
 }
 
 // When sessions disappear from the list (closed via ×), dispose their terminals;
@@ -119,6 +127,12 @@ onMessage((msg: ServerMsg) => {
       reconcileClosed(msg.sessions);
       break;
 
+    case "opened":
+      // A session THIS client just opened (typed path or Recent/Favorite click).
+      // Select it immediately so the main pane shows it, as if the row was clicked.
+      selectSession(msg.id);
+      break;
+
     case "projects":
       updateProjects(msg.projects);
       break;
@@ -166,8 +180,8 @@ onMessage((msg: ServerMsg) => {
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 void (async () => {
-  initTerminalContainer(termWrap);
-  initSessions(sessionListEl, selectSession);
+  initTerminalContainer(termWrap, () => focusSidebar());
+  initSessions(sessionListEl, selectSession, enterSession);
   initProjectPicker(pickerEl, (path) => {
     send({ t: "open", cwd: path });
     newForm.classList.add("hidden");

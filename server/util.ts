@@ -75,12 +75,29 @@ export async function ensureDeckDir(): Promise<void> {
   await fsp.mkdir(config.paths.deckDir, { recursive: true });
 }
 
-/** Pick the context window size for a model id. */
+/**
+ * Pick the context window size for a model id.
+ *
+ * The transcript records the *raw* API model id (e.g. "claude-opus-4-8") — the
+ * "[1m]" suffix that Claude Code shows for the 1M-context beta never appears
+ * there, so a plain "[1m]" check alone never fires on transcript data. Among
+ * current models only Haiku is 200K; Opus 4.6/4.7/4.8, Sonnet 4.6/5, and
+ * Fable/Mythos 5 all ship a 1M window (verified against the Claude model
+ * catalog). Unknown/older ids fall back to the 200K default.
+ */
 export function contextWindowFor(model: string | undefined): number {
-  if (!model) return config.contextWindows.default;
+  const { big, default: def } = config.contextWindows;
+  if (!model) return def;
   const m = model.toLowerCase();
-  if (m.includes("[1m]") || m.includes("opus-4-6") || m.includes("sonnet-4-6")) {
-    return config.contextWindows.big;
+  if (m.includes("[1m]")) return big; // honor the beta marker if it ever shows up
+  if (m.includes("haiku")) return def; // Haiku (and older small models) are 200K
+  if (
+    /opus-4-[678]\b/.test(m) ||
+    /sonnet-4-6\b/.test(m) ||
+    /sonnet-5\b/.test(m) ||
+    /(?:fable|mythos)-5\b/.test(m)
+  ) {
+    return big;
   }
-  return config.contextWindows.default;
+  return def;
 }

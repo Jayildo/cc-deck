@@ -111,6 +111,7 @@ export type ClientMsg =
   | { t: "open"; cwd: string; title?: string }
   | { t: "attach"; id: string } // subscribe to a session's pty stream (server replays scrollback)
   | { t: "input"; id: string; data: string }
+  | { t: "pasteImage"; id: string; ext: string; dataB64: string } // clipboard image → saved server-side, its path typed into the session
   | { t: "resize"; id: string; cols: number; rows: number }
   | { t: "close"; id: string }
   | { t: "refreshUsage" }
@@ -125,6 +126,8 @@ export type ClientMsg =
 export type ServerMsg =
   | { t: "hello"; version: string; sessions: SessionMeta[]; usage: AccountUsage; projects: ProjectLists }
   | { t: "sessions"; sessions: SessionMeta[] }
+  | { t: "opened"; id: string } // ack to the client that sent "open" — auto-select this session
+
   | { t: "projects"; projects: ProjectLists }
   | { t: "scrollback"; id: string; data: string } // sent on attach
   | { t: "pty"; id: string; data: string }

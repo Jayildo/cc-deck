@@ -7,12 +7,64 @@ type SelectCb = (id: string) => void;
 let sessions: SessionMeta[] = [];
 const metricsMap = new Map<string, SessionMetrics>();
 let selectedId: string | null = null;
+let cursorId: string | null = null; // keyboard-nav highlight (separate from selected)
 let listEl: HTMLElement;
 let onSelect: SelectCb;
+let onEnter: SelectCb;
 
-export function initSessions(el: HTMLElement, cb: SelectCb): void {
+export function initSessions(el: HTMLElement, select: SelectCb, enter: SelectCb): void {
   listEl = el;
-  onSelect = cb;
+  onSelect = select;
+  onEnter = enter;
+  listEl.tabIndex = 0; // focusable so it can own keyboard navigation
+  listEl.addEventListener("keydown", onKeydown);
+}
+
+// ── Keyboard navigation ─────────────────────────────────────────────────────────
+// The sidebar and terminal swap DOM focus; whichever is focused owns the keys.
+// While the list is focused: ↑/↓ move the cursor, Enter dives into that session.
+
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    moveCursor(1);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    moveCursor(-1);
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (cursorId) onEnter(cursorId);
+  }
+}
+
+function scrollCursorIntoView(): void {
+  if (!cursorId) return;
+  listEl.querySelector<HTMLElement>(`[data-sid="${cursorId}"]`)?.scrollIntoView({ block: "nearest" });
+}
+
+function moveCursor(delta: number): void {
+  if (!sessions.length) return;
+  const cur = sessions.findIndex((s) => s.id === cursorId);
+  const next = Math.max(0, Math.min(sessions.length - 1, (cur < 0 ? 0 : cur) + delta));
+  cursorId = sessions[next]!.id;
+  renderAll();
+  scrollCursorIntoView();
+}
+
+/** Enter keyboard-nav mode: focus the list and put the cursor on the active row. */
+export function focusSidebar(): void {
+  cursorId =
+    selectedId && sessions.some((s) => s.id === selectedId) ? selectedId : (sessions[0]?.id ?? null);
+  renderAll();
+  listEl.focus();
+  scrollCursorIntoView();
+}
+
+/** Drop the keyboard-nav highlight (e.g. when focus moves into the terminal). */
+export function clearCursor(): void {
+  if (cursorId === null) return;
+  cursorId = null;
+  renderAll();
 }
 
 export function updateSessions(list: SessionMeta[]): void {
@@ -67,9 +119,10 @@ function buildRow(s: SessionMeta): HTMLElement {
     : "토큰 사용량";
   const dotClass = DOT_CLASS[s.status] ?? "dot";
   const isSelected = s.id === selectedId;
+  const isCursor = s.id === cursorId;
 
   const el = document.createElement("div");
-  el.className = `session-row${isSelected ? " selected" : ""}`;
+  el.className = `session-row${isSelected ? " selected" : ""}${isCursor ? " cursor" : ""}`;
   el.setAttribute("data-sid", s.id);
   el.innerHTML = `
     <div class="row-header">
@@ -85,15 +138,21 @@ function buildRow(s: SessionMeta): HTMLElement {
     e.stopPropagation();
     send({ t: "close", id: s.id });
   });
-  el.addEventListener("click", () => onSelect(s.id));
+  el.addEventListener("click", () => {
+    cursorId = s.id; // clicking also parks the keyboard cursor here
+    onSelect(s.id);
+  });
 
   return el;
 }
 
+// Continuous green→red as the bar fills, like an XP/health bar. Emits a `--c`
+// custom property (not `background`) so the CSS can reuse the hue for the fill
+// and its gloss. hue 130 (green) at 0% → 0 (red) at 100%, amber through the mid.
 function fillColor(pct: number): string {
-  if (pct >= 80) return "background:#ef4444";
-  if (pct >= 50) return "background:#f59e0b";
-  return "background:#22c55e";
+  const p = Math.max(0, Math.min(100, pct));
+  const hue = Math.round(130 - 1.3 * p);
+  return `--c:hsl(${hue} 85% 50%)`;
 }
 
 function esc(s: string): string {
