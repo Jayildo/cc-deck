@@ -3,7 +3,7 @@ import "../style.css";
 
 import type { ServerMsg, SessionMetrics, SessionMeta } from "../../shared/types";
 import { connect, onMessage, send } from "./ws.js";
-import { initTerminalContainer, write, activate, getActiveId, disposeTerminal, terminalIds, focusTerminal } from "./terminal.js";
+import { initTerminalContainer, write, activate, getActiveId, disposeTerminal, terminalIds, focusTerminal, resetTerminal } from "./terminal.js";
 import { initSessions, updateSessions, updateSessionMetrics, setSelectedSession, focusSidebar, clearCursor } from "./sessions.js";
 import { renderUsage } from "./usage.js";
 import { initProjectPicker, updateProjects } from "./projects.js";
@@ -120,6 +120,11 @@ onMessage((msg: ServerMsg) => {
       renderUsage(msg.usage);
       updateProjects(msg.projects);
       reconcileClosed(msg.sessions);
+      // On reconnect the server builds a fresh Client with an empty attached set,
+      // so live pty frames stop arriving. Re-subscribe every terminal we still
+      // show; the server replays scrollback, which the "scrollback" case resets
+      // before writing (below) so there's no duplication.
+      for (const id of terminalIds()) send({ t: "attach", id });
       break;
 
     case "sessions":
@@ -138,6 +143,12 @@ onMessage((msg: ServerMsg) => {
       break;
 
     case "scrollback":
+      // Full-buffer replay on (re)attach — reset first so switching X→Y→X (or a
+      // reconnect) doesn't append a duplicate copy of already-present content.
+      resetTerminal(msg.id);
+      write(msg.id, msg.data);
+      break;
+
     case "pty":
       write(msg.id, msg.data);
       break;
@@ -180,7 +191,7 @@ onMessage((msg: ServerMsg) => {
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 void (async () => {
-  initTerminalContainer(termWrap, () => focusSidebar());
+  initTerminalContainer(termWrap, () => focusSidebar(), showToast);
   initSessions(sessionListEl, selectSession, enterSession);
   initProjectPicker(pickerEl, (path) => {
     send({ t: "open", cwd: path });

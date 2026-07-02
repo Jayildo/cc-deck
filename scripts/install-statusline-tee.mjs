@@ -26,7 +26,7 @@ function toGitBash(p) {
 const TEE_SH_GB = toGitBash(TEE_SH);
 const FEED_JSONL_GB = toGitBash(FEED_JSONL);
 const FEED_TMP_GB = toGitBash(FEED_TMP);
-const TEE_CMD = `bash ${TEE_SH_GB}`;
+const TEE_CMD = `bash "${TEE_SH_GB}"`;
 
 // ── Read settings ─────────────────────────────────────────────────────────────
 let settings;
@@ -38,6 +38,7 @@ try {
 }
 
 const current = settings?.statusLine?.command ?? "";
+const statusLineExisted = !!settings.statusLine; // did the user have ANY statusLine config?
 
 if (current === TEE_CMD) {
   console.log("Already installed — statusLine.command already points to the tee.");
@@ -52,7 +53,11 @@ fs.mkdirSync(CC_DECK_DIR, { recursive: true });
 fs.writeFileSync(SETTINGS_BAK, JSON.stringify(settings, null, 2), "utf8");
 fs.writeFileSync(
   ORIGINAL_JSON,
-  JSON.stringify({ command: current, savedAt: new Date().toISOString() }, null, 2),
+  JSON.stringify(
+    { command: current, existed: statusLineExisted, savedAt: new Date().toISOString() },
+    null,
+    2
+  ),
   "utf8"
 );
 console.log(`Backed up settings.json → ${SETTINGS_BAK}`);
@@ -64,14 +69,16 @@ console.log(`Saved original statusLine.command → ${ORIGINAL_JSON}`);
 //   2. Appends to the feed JSONL (one JSON object per line).
 //   3. Trims feed to last 200 lines in-place.
 //   4. Pipes the original input to the original command, preserving its output exactly.
-const originalCmd = current || "cat"; // fall back to cat if no original command set
+// `cat` would echo the raw JSON payload straight to the statusline when there is
+// no original command to fall back to; `true` reads/discards stdin silently.
+const originalCmd = current || "true";
 const teeSh = `#!/usr/bin/env bash
 # statusline-tee.sh — managed by cc-deck install-statusline-tee.mjs
 # DO NOT EDIT by hand; run uninstall-statusline-tee.mjs to restore original.
 
 input=$(cat)
-printf '%s\\n' "$input" >> ${FEED_JSONL_GB}
-tail -n 200 ${FEED_JSONL_GB} > ${FEED_TMP_GB} && mv ${FEED_TMP_GB} ${FEED_JSONL_GB}
+printf '%s\\n' "$input" >> "${FEED_JSONL_GB}"
+tail -n 200 "${FEED_JSONL_GB}" > "${FEED_TMP_GB}" && mv "${FEED_TMP_GB}" "${FEED_JSONL_GB}"
 printf '%s' "$input" | ${originalCmd}
 `;
 
@@ -80,6 +87,7 @@ console.log(`Written tee wrapper → ${TEE_SH}`);
 
 // ── Patch settings.json ───────────────────────────────────────────────────────
 if (!settings.statusLine) settings.statusLine = {};
+settings.statusLine.type = "command"; // required — Claude Code ignores statusLine without it
 settings.statusLine.command = TEE_CMD;
 fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2), "utf8");
 

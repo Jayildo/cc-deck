@@ -199,10 +199,21 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
         };
         states.set(meta.id, s);
       }
-      // Bind transcript the first time claudeSessionId is available
-      if (s.filePath === null && meta.claudeSessionId) {
+      // Bind (or rebind, after /clear) the transcript once claudeSessionId is
+      // known. sessions.ts rolls claudeSessionId to a new file on /clear; when the
+      // resolved path changes, close the old watcher and follow the new file,
+      // preserving the cumulative token totals for the session's whole lifetime.
+      if (meta.claudeSessionId) {
         const fp = findTranscriptPath(meta.claudeSessionId, meta.cwd);
-        if (fp) bindFile(s, fp);
+        if (fp && fp !== s.filePath) {
+          if (s.watcher) {
+            s.watcher.close().catch(() => undefined);
+            s.watcher = null;
+            s.byteOffset = 0;
+            s.seen.clear(); // new file → new message ids; keep cumulative totals
+          }
+          bindFile(s, fp);
+        }
       }
     },
 

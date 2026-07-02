@@ -10,14 +10,20 @@ import type { SessionMeta, SessionManager, SessionManagerHandlers } from "../sha
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const POLL_MS = 400;
-const POLL_TIMEOUT_MS = 25_000;
+const SLOW_POLL_MS = 3_000;
+// Poll fast for this long after spawn (covers the common "first prompt within a
+// few seconds" case), then slow down but NEVER stop while the pty is alive — the
+// transcript is created lazily on the first submitted prompt, which can come much
+// later, and /clear rolls the session id to a brand-new transcript mid-life.
+const FAST_POLL_WINDOW_MS = 25_000;
 const POLL_SKEW_MS = 2_000;
 
 interface SessionEntry {
   meta: SessionMeta;
   terminal: ReturnType<typeof pty.spawn>;
   scrollback: string;
-  discoveryTimer?: ReturnType<typeof setInterval>;
+  discoveryTimer?: ReturnType<typeof setTimeout>;
+  discoveryStopped?: boolean;
 }
 
 /** Trim scrollback to stay within the byte cap, dropping from the front. */
@@ -55,7 +61,8 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
   function close(id: string): void {
     const entry = sessions.get(id);
     if (!entry) return;
-    clearInterval(entry.discoveryTimer);
+    entry.discoveryStopped = true;
+    clearTimeout(entry.discoveryTimer);
     const { pid } = entry.terminal;
     try { entry.terminal.kill(); } catch { /* already dead */ }
     // Reap the ConPTY process tree on Windows
@@ -132,7 +139,8 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
     });
 
     terminal.onExit(({ exitCode }) => {
-      clearInterval(entry.discoveryTimer);
+      entry.discoveryStopped = true;
+      clearTimeout(entry.discoveryTimer);
       entry.meta.status = "exited";
       handlers.onExit(id, exitCode ?? 0);
       handlers.onSessions(list());
@@ -141,54 +149,96 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
     // Let clients see the new session immediately
     handlers.onSessions(list());
 
-    // Poll ~/.claude/projects/<slug>/ for a new *.jsonl whose stem is a UUID
-    // and whose file time is >= spawnTime (with a small skew for filesystem lag).
+    // Watch ~/.claude/projects/<slug>/ for this session's transcript. The .jsonl
+    // is created lazily on the first submitted prompt (which may be well after
+    // spawn), and /clear later rolls the session id to a new file — so we poll
+    // fast for the first FAST_POLL_WINDOW_MS, then slowly forever while alive,
+    // handling both initial discovery and rebinding.
     const projectDir = path.join(config.paths.projectsDir, slugForCwd(cwd));
-    let elapsed = 0;
 
-    entry.discoveryTimer = setInterval(async () => {
-      elapsed += POLL_MS;
+    function scheduleDiscovery(): void {
+      if (entry.discoveryStopped) return;
+      const delay = Date.now() - spawnTime < FAST_POLL_WINDOW_MS ? POLL_MS : SLOW_POLL_MS;
+      entry.discoveryTimer = setTimeout(() => void runDiscovery(), delay);
+    }
 
-      if (entry.meta.claudeSessionId || elapsed > POLL_TIMEOUT_MS) {
-        clearInterval(entry.discoveryTimer);
-        return;
-      }
+    async function runDiscovery(): Promise<void> {
+      if (entry.discoveryStopped || sessions.get(id) !== entry) return;
 
       let names: string[];
       try {
         names = await fsp.readdir(projectDir);
       } catch {
-        return; // directory may not exist yet; keep trying
+        scheduleDiscovery(); // directory may not exist yet
+        return;
       }
 
-      // Collect claudeSessionIds already claimed by other tracked sessions
-      const claimed = new Set<string>();
-      for (const e of sessions.values()) {
-        if (e.meta.id !== id && e.meta.claudeSessionId) claimed.add(e.meta.claudeSessionId);
-      }
-
+      // Stat every candidate UUID transcript. birthtime is reliable on NTFS (the
+      // target FS); fall back to mtime only when birthtime is unavailable (0).
+      const candidates: { stem: string; birth: number; mtime: number }[] = [];
       for (const fname of names) {
         if (!fname.endsWith(".jsonl")) continue;
         const stem = fname.slice(0, -6);
         if (!UUID_RE.test(stem)) continue;
-        if (claimed.has(stem)) continue;
-
         try {
           const st = await fsp.stat(path.join(projectDir, fname));
-          // Use whichever timestamp is later (birthtimeMs may be 0 on some FSes)
-          const fileTime = Math.max(st.birthtimeMs, st.mtimeMs);
-          if (fileTime < spawnTime - POLL_SKEW_MS) continue;
+          const birth = st.birthtimeMs > 0 ? st.birthtimeMs : st.mtimeMs;
+          candidates.push({ stem, birth, mtime: st.mtimeMs });
         } catch {
-          continue;
+          /* vanished between readdir and stat */
         }
-
-        entry.meta.claudeSessionId = stem;
-        entry.meta.pid = terminal.pid;
-        clearInterval(entry.discoveryTimer);
-        handlers.onSessions(list());
-        return;
       }
-    }, POLL_MS);
+
+      // Recompute the claimed set SYNCHRONOUSLY here — after all awaits, right
+      // before assignment — so two same-cwd pollers can't bind the same file.
+      const claimed = new Set<string>();
+      for (const e of sessions.values()) {
+        if (e !== entry && e.meta.claudeSessionId) claimed.add(e.meta.claudeSessionId);
+      }
+
+      if (!entry.meta.claudeSessionId) {
+        // Initial discovery: among unclaimed transcripts created at/after our
+        // spawn, pick the one whose birthtime is CLOSEST to spawnTime so two
+        // sessions opened in the same cwd don't swap transcripts.
+        const eligible = candidates
+          .filter((c) => !claimed.has(c.stem) && c.birth >= spawnTime - POLL_SKEW_MS)
+          .sort((a, b) => Math.abs(a.birth - spawnTime) - Math.abs(b.birth - spawnTime));
+        if (eligible[0]) {
+          entry.meta.claudeSessionId = eligible[0].stem;
+          entry.meta.pid = terminal.pid;
+          handlers.onSessions(list());
+        }
+      } else {
+        // Rebind: /clear starts a new session id + new transcript. If a strictly
+        // newer unclaimed transcript than the bound one appears, switch to it so
+        // metrics follow the live conversation instead of freezing on the old file.
+        const bound = candidates.find((c) => c.stem === entry.meta.claudeSessionId);
+        const boundBirth = bound?.birth ?? 0;
+        const boundMtime = bound?.mtime ?? 0;
+        const newer = candidates
+          .filter(
+            (c) =>
+              c.stem !== entry.meta.claudeSessionId &&
+              !claimed.has(c.stem) &&
+              c.birth > boundBirth &&
+              c.birth >= spawnTime - POLL_SKEW_MS &&
+              // Only a /clear roll-over: the bound transcript went quiet at/before
+              // the new one was born. A transcript still being appended (e.g. an
+              // unrelated claude running in the same cwd) keeps a newer mtime and
+              // is left alone, so we never hijack a live foreign session.
+              boundMtime <= c.birth + POLL_SKEW_MS,
+          )
+          .sort((a, b) => b.birth - a.birth);
+        if (newer[0]) {
+          entry.meta.claudeSessionId = newer[0].stem;
+          handlers.onSessions(list());
+        }
+      }
+
+      scheduleDiscovery();
+    }
+
+    scheduleDiscovery();
 
     return meta;
   }

@@ -13,10 +13,14 @@ let activeId: string | null = null;
 let container: HTMLElement;
 let rafId: number | null = null;
 let onBack: (() => void) | null = null; // Alt+← in the terminal → back to the sidebar
+let onNotify: ((msg: string) => void) | null = null;
 
-export function initTerminalContainer(el: HTMLElement, back?: () => void): void {
+const MAX_PASTE_BYTES = 11 * 1024 * 1024; // base64 ≈ 1.37× → stays under the 16MB WS maxPayload
+
+export function initTerminalContainer(el: HTMLElement, back?: () => void, notify?: (msg: string) => void): void {
   container = el;
   onBack = back ?? null;
+  onNotify = notify ?? null;
   new ResizeObserver(() => scheduleFit()).observe(el);
   // Intercept image pastes in the capture phase, before xterm's text-paste
   // handler. Text pastes fall through untouched.
@@ -55,6 +59,10 @@ async function handlePaste(e: ClipboardEvent): Promise<void> {
       e.stopPropagation();
       const blob = item.getAsFile();
       if (!blob) return;
+      if (blob.size > MAX_PASTE_BYTES) {
+        onNotify?.("이미지가 너무 커서 붙여넣지 못했습니다 (최대 ~11MB)");
+        return;
+      }
       const ext = MIME_EXT[item.type] ?? "png";
       send({ t: "pasteImage", id: activeId, ext, dataB64: await blobToBase64(blob) });
       return;
@@ -141,6 +149,11 @@ function getOrCreate(id: string): TermEntry {
 
 export function write(id: string, data: string): void {
   getOrCreate(id).term.write(data);
+}
+
+/** Clear a terminal (screen + scrollback) before a full scrollback replay. */
+export function resetTerminal(id: string): void {
+  getOrCreate(id).term.reset();
 }
 
 export function activate(id: string): void {

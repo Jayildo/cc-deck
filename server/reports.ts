@@ -201,10 +201,17 @@ function summarize(prompt: string): Promise<string> {
       cwd: config.paths.deckDir, // neutral cwd → no heavy project context
     });
     const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        /* noop */
+      // Spawned with shell:true, so a plain child.kill() only kills the cmd.exe
+      // wrapper and leaves the actual `claude` process tree running as a zombie —
+      // mirror sessions.ts's taskkill /T reap on Windows.
+      if (process.platform === "win32" && child.pid) {
+        execFile("taskkill", ["/T", "/F", "/PID", String(child.pid)], () => {});
+      } else {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* noop */
+        }
       }
       resolve("_(요약 시간 초과)_");
     }, 120_000);
@@ -218,6 +225,7 @@ function summarize(prompt: string): Promise<string> {
       clearTimeout(timer);
       resolve(code === 0 && out.trim() ? out.trim() : `_(요약 실패${err ? ": " + err.slice(0, 160) : ""})_`);
     });
+    child.stdin.on("error", () => {}); // absorb EPIPE if the child dies before stdin drains
     child.stdin.write(prompt);
     child.stdin.end();
   });

@@ -13,6 +13,15 @@ if (process.platform !== "win32") {
 }
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+// The server serves web/dist statically in production (isProd → no Vite dev
+// server); installing autostart against an unbuilt repo silently ships a
+// working server behind a 404'ing dashboard.
+if (!fs.existsSync(path.join(repo, "web", "dist", "index.html"))) {
+  console.error("web/dist가 없습니다 — 먼저 `npm run build`를 실행하세요.");
+  process.exit(1);
+}
+
 const home = os.homedir();
 const deckDir = path.join(home, ".cc-deck");
 fs.mkdirSync(deckDir, { recursive: true });
@@ -49,6 +58,7 @@ const cmd =
     "@echo off",
     `cd /d "${repo}"`,
     "set NODE_ENV=production",
+    `set CC_DECK_PORT=${PORT}`,
     `"${nodeExe}" --import tsx server\\index.ts > "${logPath}" 2>&1`,
   ].join("\r\n") + "\r\n";
 fs.writeFileSync(cmdPath, cmd, "utf8");
