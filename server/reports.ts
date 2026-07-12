@@ -20,6 +20,16 @@ interface ProjectDay {
   sessionCount: number;
 }
 
+// Path-key normalization: Windows is case-insensitive + backslash-separated, so
+// fold to that + lowercase there. macOS/Linux are case-SENSITIVE — only
+// collapse/strip slashes there, never lowercase (would wrongly merge distinct dirs).
+function normPath(p: string): string {
+  if (process.platform === "win32") {
+    return p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+  }
+  return p.replace(/\/+/g, "/").replace(/\/+$/, "");
+}
+
 // ── date helpers (local time) ────────────────────────────────────────────────
 function startOfTodayMs(): number {
   const d = new Date();
@@ -115,14 +125,14 @@ async function gatherToday(dayStartMs: number): Promise<ProjectDay[]> {
       }
       // Skip cc-deck's own report-summary sessions (recursion noise) and the
       // home dir (not a project).
-      const cwdNorm = cwd ? cwd.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "") : "";
-      const homeNorm = config.paths.home.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+      const cwdNorm = cwd ? normPath(cwd) : "";
+      const homeNorm = normPath(config.paths.home);
       if (!cwd || cwdNorm.includes("/.cc-deck") || cwdNorm === homeNorm) continue;
 
       const today = records.filter((r) => r.timestamp && Date.parse(r.timestamp) >= dayStartMs);
       if (!today.length) continue;
 
-      const key = cwd.toLowerCase();
+      const key = normPath(cwd);
       let pd = byCwd.get(key);
       if (!pd) {
         pd = { cwd, label: projectLabel(cwd), gitBranch: branch, commits: [], prompts: [], filesTouched: [], toolCounts: {}, sessionCount: 0 };
@@ -199,18 +209,30 @@ function summarize(prompt: string): Promise<string> {
       shell: true,
       windowsHide: true,
       cwd: config.paths.deckDir, // neutral cwd → no heavy project context
+      // On POSIX, shell:true runs the command via `/bin/sh -c`, so child.pid is
+      // the shell's pid, not the actual `claude` process it execs. detached:true
+      // makes that pid the leader of a new process group, so killing -pid below
+      // reaps the whole group instead of orphaning `claude`. Windows has no such
+      // shell-wrapper indirection (its taskkill /T reap already covers the tree).
+      ...(process.platform === "win32" ? {} : { detached: true }),
     });
     const timer = setTimeout(() => {
-      // Spawned with shell:true, so a plain child.kill() only kills the cmd.exe
+      // Spawned with shell:true, so a plain child.kill() only kills the cmd.exe/sh
       // wrapper and leaves the actual `claude` process tree running as a zombie —
-      // mirror sessions.ts's taskkill /T reap on Windows.
+      // mirror sessions.ts's taskkill /T reap on Windows; kill the whole process
+      // group on POSIX (see detached:true above).
       if (process.platform === "win32" && child.pid) {
         execFile("taskkill", ["/T", "/F", "/PID", String(child.pid)], () => {});
       } else {
         try {
-          child.kill("SIGKILL");
+          if (child.pid) process.kill(-child.pid, "SIGKILL");
+          else child.kill("SIGKILL");
         } catch {
-          /* noop */
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            /* noop */
+          }
         }
       }
       resolve("_(요약 시간 초과)_");

@@ -24,6 +24,13 @@ npm run build
 npm start        # open http://127.0.0.1:4317
 ```
 
+## macOS / cross-platform
+
+Requires **Node 24+**. cc-deck runs on Windows and macOS (Linux is untested but
+likely close, since it shares the non-Windows code path). For a from-zero
+macOS setup — prerequisites, autostart via launchd, and troubleshooting — see
+[MACOS.md](./MACOS.md).
+
 ## Account 5h / weekly usage
 
 Two complementary sources (both enabled):

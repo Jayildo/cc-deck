@@ -13,9 +13,17 @@ interface DeckRecent {
   lastUsed: number;
 }
 
-/** Case-insensitive, slash-normalized key for de-duping the same folder. */
+/**
+ * Slash-normalized key for de-duping the same folder. Windows paths are
+ * case-insensitive and backslash-separated, so we fold to that form + lowercase
+ * there; macOS/Linux paths are case-SENSITIVE, so we only collapse/strip slashes
+ * and leave case alone (lowercasing there would wrongly merge distinct folders).
+ */
 function normKey(p: string): string {
-  return p.replace(/[\\/]+/g, "\\").replace(/\\+$/, "").toLowerCase();
+  if (process.platform === "win32") {
+    return p.replace(/[\\/]+/g, "\\").replace(/\\+$/, "").toLowerCase();
+  }
+  return p.replace(/\/+/g, "/").replace(/\/+$/, "");
 }
 
 export interface ProjectStore {

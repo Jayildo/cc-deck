@@ -7,6 +7,22 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { execFileSync } from "node:child_process";
+
+// The tee wrapper is a bash script invoked as `bash "<path>"` — this already
+// works unmodified on macOS/Linux (native /bin/bash) as well as Windows (Git
+// Bash), since toGitBash() below is a no-op on POSIX paths. The one real
+// cross-platform risk is `bash` missing from PATH, so fail fast with a clear
+// message instead of silently writing a statusLine.command that never runs.
+try {
+  execFileSync("bash", ["--version"], { stdio: "ignore" });
+} catch {
+  console.error(
+    "ERROR: `bash` not found on PATH.\n" +
+      "This tee wrapper requires bash (Git Bash on Windows, or the system bash on macOS/Linux)."
+  );
+  process.exit(1);
+}
 
 const HOME = os.homedir();
 const CLAUDE_DIR = path.join(HOME, ".claude");

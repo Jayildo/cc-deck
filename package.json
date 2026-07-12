@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Local mission-control for multiple Claude Code CLI sessions: live terminals, per-session context + tokens, and account 5h/weekly usage.",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "dev": "concurrently -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "tsx watch server/index.ts",

@@ -70,6 +70,13 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
       try {
         execFileSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore" });
       } catch { /* best-effort */ }
+    } else if (pid) {
+      // node-pty's default kill() sends SIGHUP; a process that ignores or handles
+      // it (or is mid-cleanup) can outlive the session. Force-kill as a
+      // best-effort second pass — mirrors the win32 taskkill /F above.
+      try {
+        entry.terminal.kill("SIGKILL");
+      } catch { /* already dead */ }
     }
     // User-initiated close: drop the entry so dead sessions don't pile up.
     // (Natural process exit keeps the entry marked "exited" for visibility.)
