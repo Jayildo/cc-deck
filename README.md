@@ -1,57 +1,89 @@
 # cc-deck
 
-Local mission-control for your Claude Code CLI sessions. One window: open new
-sessions as real terminals, watch per-session progress, context-window %, and
-cumulative token usage, plus your account's **5-hour** and **weekly** limit
-usage.
+**Local mission-control for your [Claude Code](https://claude.com/claude-code) CLI sessions.**
 
-Everything runs on your machine, bound to `127.0.0.1` behind a per-launch token.
-cc-deck reads what Claude Code already writes (`~/.claude/sessions`,
-`~/.claude/projects/**/<id>.jsonl`, `~/.claude/.credentials.json`) — it does not
-talk to any third-party service.
+One browser window to run several Claude Code sessions as real terminals side by
+side, watch each one's live state and token/context usage at a glance, and keep
+an eye on your account's 5-hour and weekly limits. Everything runs on your own
+machine — cc-deck just reads what Claude Code already writes to `~/.claude`.
 
-## Run
+> **Not affiliated with Anthropic.** cc-deck reads local files and one
+> undocumented account-usage endpoint; it may break when Claude Code changes,
+> and degrades gracefully when it does.
+
+## Features
+
+- **Multi-session terminals** — open and switch between many `claude` sessions
+  in one window. Real PTYs rendered with xterm.js, not a reimplementation — the
+  same CLI underneath.
+- **Per-session activity indicator** — each session shows 🟠 *working* /
+  🔵 *awaiting choice* (a question or plan approval) / 🟢 *done*, derived live
+  from its transcript.
+- **Token & context metrics** — deduped cumulative tokens and context-window %
+  per session.
+- **Account usage** — 5-hour and weekly limit usage with reset times.
+- **5 eye-friendly themes** — Midnight, Nord, Solarized Dark, Gruvbox,
+  Solarized Light (top-right switcher; also themes the terminals).
+
+## Requirements
+
+- **Node 24+**
+- **[Claude Code](https://claude.com/claude-code) CLI installed and logged in.**
+  cc-deck is a control panel over your *own* local Claude Code, not a standalone
+  app — it reads your `~/.claude`. Run `claude` once and sign in first so
+  `~/.claude/.credentials.json` exists.
+- **Windows or macOS** (Linux is untested but shares the non-Windows code path).
+
+## Quick start
 
 ```bash
-npm install
-npm run dev      # backend (4317) + Vite frontend (5273) — open http://localhost:5273
-```
-
-Production (single process serving a built frontend):
-
-```bash
+git clone https://github.com/Jayildo/cc-deck.git
+cd cc-deck
+npm install          # @lydell/node-pty ships prebuilds — no compiler needed
 npm run build
-npm start        # open http://127.0.0.1:4317
+npm start            # → http://localhost:4317
 ```
 
-## macOS / cross-platform
+For development (backend + Vite with hot reload):
 
-Requires **Node 24+**. cc-deck runs on Windows and macOS (Linux is untested but
-likely close, since it shares the non-Windows code path). For a from-zero
-macOS setup — prerequisites, autostart via launchd, and troubleshooting — see
-[MACOS.md](./MACOS.md).
+```bash
+npm run dev          # backend :4317 + frontend :5273 → open http://localhost:5273
+```
 
-## Account 5h / weekly usage
+Optional helpers — `npm run install:autostart` starts cc-deck and opens the
+dashboard on login; `npm run restart` relaunches it after you pull new code
+(the server has no auto-reload). macOS-specific setup, autostart via launchd,
+and troubleshooting live in **[MACOS.md](./MACOS.md)**.
 
-Two complementary sources (both enabled):
+## How it works / privacy
 
-- **OAuth poller** — queries an undocumented Anthropic endpoint with the token
-  already in `~/.claude/.credentials.json`. Accurate, works with zero sessions
-  open, includes reset times. Unsupported — may break without notice; cc-deck
-  degrades gracefully and shows a "source/stale" badge.
-- **Statusline tee** _(optional)_ — `npm run install:statusline` wraps your
-  existing Claude Code statusline so live renders also feed cc-deck. Reversible
-  with `npm run uninstall:statusline`. Your current statusline keeps working.
+cc-deck binds to `127.0.0.1` behind a per-launch token — it is **loopback-only**
+and talks to no third-party service. It reads what Claude Code already writes:
+
+- `~/.claude/projects/**/<id>.jsonl` — transcripts → tokens, context %, activity
+- `~/.claude/.credentials.json` — the OAuth token → account usage
+- `~/.claude/sessions` — session metadata
+
+Account usage has two sources (both on): an **OAuth poller** (accurate, works
+with zero sessions open, undocumented — may break) and an optional **statusline
+tee** (`npm run install:statusline`, reversible with `uninstall:statusline`)
+that also feeds live statusline renders. Your existing statusline keeps working.
 
 ## Layout
 
 ```
 shared/types.ts     WS protocol + data contract (shared by server & web)
 server/             Fastify + node-pty backend
-  index.ts          wiring: WS broadcast, auth, static
+  index.ts          wiring: WS broadcast, auth, static serve
   sessions.ts       node-pty session manager (spawn/attach/resize/kill)
-  metrics.ts        transcript tailer → tokens (deduped) + context %
+  metrics.ts        transcript tailer → tokens (deduped) + context % + activity
   usage.ts          OAuth poller + statusline-feed reader
-web/                Vite + xterm.js frontend
-scripts/            statusline tee install/uninstall
+web/                Vite + xterm.js frontend (plain TS, no framework)
+scripts/            autostart / statusline install helpers (Windows + macOS)
 ```
+
+## License
+
+No license yet — this repo is public but not yet licensed for reuse. Add one
+(e.g. [MIT](https://choosealicense.com/licenses/mit/)) if you want others to be
+able to use, modify, or redistribute it.
