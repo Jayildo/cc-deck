@@ -59,6 +59,13 @@ export interface SessionMetrics {
   lastTool?: string;
   /** Short human progress hint, e.g. "running Bash", "responding", "idle". */
   progress?: string;
+  /** Coarse live activity state for the sidebar indicator, derived from the
+   *  latest main-chain assistant record:
+   *  - "working"         — a tool is running (Claude is busy)
+   *  - "awaiting-choice" — AskUserQuestion / ExitPlanMode pending (user must pick)
+   *  - "done"            — the turn ended with a text response (waiting on user)
+   *  Undefined before the first submitted prompt. */
+  activity?: "working" | "awaiting-choice" | "done";
   /** Number of assistant turns observed. */
   turnCount: number;
 }

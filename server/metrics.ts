@@ -38,6 +38,11 @@ interface TRecord {
   message?: TMessage;
 }
 
+// Tools whose tool_use pauses the turn for the USER to pick an option, rather
+// than Claude continuing to work — surfaced in the sidebar as "awaiting-choice".
+// Names must match the transcript tool_use `name` exactly.
+const CHOICE_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
+
 // ─── Per-session tracking state ───────────────────────────────────────────────
 
 interface SessionState {
@@ -134,8 +139,10 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
     if (toolUse !== undefined && toolUse.name) {
       s.metrics.lastTool = toolUse.name;
       s.metrics.progress = `running ${toolUse.name}`;
+      s.metrics.activity = CHOICE_TOOLS.has(toolUse.name) ? "awaiting-choice" : "working";
     } else {
       s.metrics.progress = "responding";
+      s.metrics.activity = "done";
     }
 
     return true;

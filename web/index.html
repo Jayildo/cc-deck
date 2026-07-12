@@ -2,6 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // Anti-flash: stamp the persisted theme onto <html> before first paint,
+      // so a returning user on a non-default theme doesn't see a flash of
+      // Midnight (the :root fallback) before main.ts takes over.
+      (function () {
+        try {
+          var t = localStorage.getItem("cc-deck-theme");
+          var valid = ["midnight", "nord", "solarized-dark", "gruvbox", "solarized-light"];
+          document.documentElement.setAttribute("data-theme", valid.indexOf(t) !== -1 ? t : "midnight");
+        } catch (e) {}
+      })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8E%9B%EF%B8%8F%3C/text%3E%3C/svg%3E" />
     <title>cc-deck</title>
@@ -25,6 +37,7 @@
           <span id="plan-badge"></span>
           <span id="source-badge" class="badge badge-gray">—</span>
         </div>
+        <div id="theme-switcher" role="group" aria-label="Theme"></div>
         <button id="report-btn" title="일일 업무일지">📋</button>
         <button id="refresh-btn" title="Refresh usage">↻</button>
       </header>

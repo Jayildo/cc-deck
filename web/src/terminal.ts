@@ -1,6 +1,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { send } from "./ws.js";
+import { THEMES, DEFAULT_THEME, type ThemeName } from "./themes.js";
 
 interface TermEntry {
   term: Terminal;
@@ -14,6 +15,16 @@ let container: HTMLElement;
 let rafId: number | null = null;
 let onBack: (() => void) | null = null; // Alt+← in the terminal → back to the sidebar
 let onNotify: ((msg: string) => void) | null = null;
+
+// The <html data-theme> attribute is stamped before this module loads (see
+// the anti-flash script in index.html), so reading it here picks up
+// whatever the user last selected — newly-created terminals then open
+// already themed, no extra wiring needed on the caller's side.
+function readInitialTheme(): ThemeName {
+  const t = document.documentElement.dataset.theme as ThemeName | undefined;
+  return t && THEMES[t] ? t : DEFAULT_THEME;
+}
+let activeThemeName: ThemeName = readInitialTheme();
 
 const MAX_PASTE_BYTES = 11 * 1024 * 1024; // base64 ≈ 1.37× → stays under the 16MB WS maxPayload
 
@@ -93,12 +104,7 @@ function doFit(): void {
 
 function makeEntry(id: string): TermEntry {
   const term = new Terminal({
-    theme: {
-      background: "#0e0e10",
-      foreground: "#e4e4e7",
-      cursor: "#a1a1aa",
-      selectionBackground: "#3f3f46",
-    },
+    theme: THEMES[activeThemeName].xterm,
     fontSize: 13,
     fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace',
     scrollback: 5000,
@@ -178,6 +184,17 @@ export function focusTerminal(): void {
 
 export function terminalIds(): string[] {
   return [...terms.keys()];
+}
+
+/** Switch every live terminal to `name`'s xterm palette; new terminals opened
+ *  afterwards pick it up too, since makeEntry() reads activeThemeName. */
+export function setTerminalsTheme(name: ThemeName): void {
+  if (!THEMES[name]) return;
+  activeThemeName = name;
+  const theme = THEMES[name].xterm;
+  for (const { term } of terms.values()) {
+    term.options.theme = theme;
+  }
 }
 
 export function disposeTerminal(id: string): void {

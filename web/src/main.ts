@@ -3,12 +3,13 @@ import "../style.css";
 
 import type { ServerMsg, SessionMetrics, SessionMeta } from "../../shared/types";
 import { connect, onMessage, send } from "./ws.js";
-import { initTerminalContainer, write, activate, getActiveId, disposeTerminal, terminalIds, focusTerminal, resetTerminal } from "./terminal.js";
+import { initTerminalContainer, write, activate, getActiveId, disposeTerminal, terminalIds, focusTerminal, resetTerminal, setTerminalsTheme } from "./terminal.js";
 import { initSessions, updateSessions, updateSessionMetrics, setSelectedSession, focusSidebar, clearCursor } from "./sessions.js";
 import { renderUsage } from "./usage.js";
 import { initProjectPicker, updateProjects } from "./projects.js";
 import { initReports, setReports, showReport, setReportStatus } from "./reports.js";
 import { fmtNum, shortModel } from "./fmt.js";
+import { THEMES, THEME_ORDER, DEFAULT_THEME, STORAGE_KEY, type ThemeName } from "./themes.js";
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const termWrap = document.getElementById("terminal-wrap") as HTMLElement;
@@ -23,6 +24,7 @@ const openBtn = document.getElementById("open-session-btn") as HTMLButtonElement
 const cancelBtn = document.getElementById("cancel-session-btn") as HTMLButtonElement;
 const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
 const toastContainer = document.getElementById("toast-container") as HTMLElement;
+const themeSwitcherEl = document.getElementById("theme-switcher") as HTMLElement;
 
 const mModel = document.getElementById("m-model") as HTMLElement;
 const mContext = document.getElementById("m-context") as HTMLElement;
@@ -102,6 +104,43 @@ cwdInput.addEventListener("keydown", (e) => {
 
 // ── Usage refresh ─────────────────────────────────────────────────────────────
 refreshBtn.addEventListener("click", () => send({ t: "refreshUsage" }));
+
+// ── Theme switcher ───────────────────────────────────────────────────────────
+// index.html's anti-flash script already stamped <html data-theme> from
+// localStorage before this module ran, so that's the source of truth for
+// "what's active" — this just keeps the switcher, localStorage, and open
+// terminals in sync with it going forward.
+function currentTheme(): ThemeName {
+  const t = document.documentElement.dataset.theme as ThemeName | undefined;
+  return t && THEMES[t] ? t : DEFAULT_THEME;
+}
+
+function applyTheme(name: ThemeName): void {
+  document.documentElement.dataset.theme = name;
+  try {
+    localStorage.setItem(STORAGE_KEY, name);
+  } catch {
+    // private-mode / storage-disabled — theme still applies, just won't persist
+  }
+  setTerminalsTheme(name);
+  renderThemeSwitcher();
+}
+
+function renderThemeSwitcher(): void {
+  const active = currentTheme();
+  themeSwitcherEl.innerHTML = "";
+  for (const name of THEME_ORDER) {
+    const def = THEMES[name];
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "theme-swatch";
+    btn.title = def.label;
+    btn.setAttribute("aria-pressed", String(name === active));
+    btn.style.background = `linear-gradient(135deg, ${def.previewBg} 50%, ${def.previewAccent} 50%)`;
+    btn.addEventListener("click", () => applyTheme(name));
+    themeSwitcherEl.appendChild(btn);
+  }
+}
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 function showToast(msg: string): void {
@@ -198,5 +237,6 @@ void (async () => {
     newForm.classList.add("hidden");
   });
   initReports();
+  renderThemeSwitcher();
   await connect();
 })();

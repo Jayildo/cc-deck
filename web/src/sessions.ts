@@ -91,6 +91,22 @@ const DOT_CLASS: Record<string, string> = {
   exited: "dot dot-exited",
 };
 
+// 3-state activity indicator (replaces the old context-% bar). Driven by
+// SessionMetrics.activity, which the server derives from the latest transcript
+// turn; lifecycle status (exited / pre-first-turn) takes precedence.
+const ACTIVITY: Record<string, { cls: string; label: string }> = {
+  working: { cls: "act-working", label: "작동 중" },
+  "awaiting-choice": { cls: "act-choice", label: "선택 요청" },
+  done: { cls: "act-done", label: "완료" },
+};
+
+function activityView(s: SessionMeta, m: SessionMetrics | undefined): { cls: string; label: string } {
+  if (s.status === "exited") return { cls: "act-exited", label: "종료" };
+  const a = m?.activity;
+  if (a && ACTIVITY[a]) return ACTIVITY[a]!;
+  return { cls: "act-idle", label: "대기" }; // starting / before the first prompt
+}
+
 function renderAll(): void {
   listEl.innerHTML = "";
   for (const s of sessions) {
@@ -107,7 +123,6 @@ function patchRow(id: string): void {
 
 function buildRow(s: SessionMeta): HTMLElement {
   const m = metricsMap.get(s.id);
-  const pct = m?.contextPct ?? 0;
   const c = m?.cumulative;
   const total = c ? fmtNum(c.total) : "—";
   // Most of "total" is loaded/cached context, not generated text. Surface the
@@ -118,6 +133,7 @@ function buildRow(s: SessionMeta): HTMLElement {
       `대부분 프로젝트 컨텍스트(CLAUDE.md·rules·도구) 로드분`
     : "토큰 사용량";
   const dotClass = DOT_CLASS[s.status] ?? "dot";
+  const act = activityView(s, m);
   const isSelected = s.id === selectedId;
   const isCursor = s.id === cursorId;
 
@@ -131,7 +147,7 @@ function buildRow(s: SessionMeta): HTMLElement {
       <span class="row-tokens" title="${esc(tip)}">${total}</span>
       <button class="close-btn" title="Close">×</button>
     </div>
-    <div class="ctx-track"><div class="ctx-fill" style="width:${pct}%;${fillColor(pct)}"></div></div>
+    <div class="act ${act.cls}"><span class="act-led"></span><span class="act-label">${act.label}</span></div>
   `;
 
   el.querySelector(".close-btn")?.addEventListener("click", (e) => {
@@ -144,15 +160,6 @@ function buildRow(s: SessionMeta): HTMLElement {
   });
 
   return el;
-}
-
-// Continuous green→red as the bar fills, like an XP/health bar. Emits a `--c`
-// custom property (not `background`) so the CSS can reuse the hue for the fill
-// and its gloss. hue 130 (green) at 0% → 0 (red) at 100%, amber through the mid.
-function fillColor(pct: number): string {
-  const p = Math.max(0, Math.min(100, pct));
-  const hue = Math.round(130 - 1.3 * p);
-  return `--c:hsl(${hue} 85% 50%)`;
 }
 
 function esc(s: string): string {
