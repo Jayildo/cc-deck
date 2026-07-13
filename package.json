@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Local mission-control for multiple Claude Code CLI sessions: live terminals, per-session context + tokens, and account 5h/weekly usage.",
+  "license": "MIT",
   "engines": {
     "node": ">=24"
   },

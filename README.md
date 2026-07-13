@@ -84,6 +84,5 @@ scripts/            autostart / statusline install helpers (Windows + macOS)
 
 ## License
 
-No license yet — this repo is public but not yet licensed for reuse. Add one
-(e.g. [MIT](https://choosealicense.com/licenses/mit/)) if you want others to be
-able to use, modify, or redistribute it.
+[MIT](./LICENSE) © 2026 Jayildo — free to use, modify, and redistribute with
+attribution.
