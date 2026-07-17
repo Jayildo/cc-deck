@@ -26,7 +26,12 @@ interface TMessage {
   id?: string;
   model?: string;
   usage?: TUsage;
-  content?: TContent[];
+  /** A user prompt is a plain string; assistant blocks / tool results are arrays. */
+  content?: TContent[] | string;
+  /** Message-level end reason, repeated on every block record of the message:
+   *  "tool_use" (a tool call is / will be in this message), "end_turn" (the turn
+   *  is finished), "max_tokens" / "stop_sequence", or null mid-stream. */
+  stop_reason?: string | null;
 }
 
 interface TRecord {
@@ -82,9 +87,50 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
     }, 150);
   }
 
+  /** True for a genuine user prompt (plain text), false for a tool_result echo. */
+  function isUserPrompt(rec: TRecord): boolean {
+    const content = rec.message?.content;
+    if (typeof content === "string") return content.trim().length > 0;
+    if (Array.isArray(content)) return !content.some((c) => c.type === "tool_result");
+    return false;
+  }
+
   /**
-   * Parse one JSONL line and mutate state.
-   * Returns true if a new (deduped) assistant turn was processed.
+   * Live activity implied by a single assistant record. Claude Code writes ONE
+   * record per content block (thinking / text / tool_use), all sharing the same
+   * message.id+requestId, and every block carries the message-level `stop_reason`.
+   * So we can read intent from any block: `stop_reason === "tool_use"` means a
+   * tool call is (or will be) part of this message; the tool_use block itself
+   * carries the name that separates "working" from "awaiting-choice".
+   */
+  function activityOf(rec: TRecord): {
+    activity: NonNullable<SessionMetrics["activity"]>;
+    tool?: string;
+    progress: string;
+  } {
+    const content = rec.message?.content;
+    const toolUse = Array.isArray(content) ? content.find((c) => c.type === "tool_use") : undefined;
+    if (toolUse?.name) {
+      return CHOICE_TOOLS.has(toolUse.name)
+        ? { activity: "awaiting-choice", tool: toolUse.name, progress: `awaiting ${toolUse.name}` }
+        : { activity: "working", tool: toolUse.name, progress: `running ${toolUse.name}` };
+    }
+    // A thinking / text block: lean on the message-level stop_reason to know
+    // whether a tool call is still coming ("tool_use") or the turn is ending.
+    if (rec.message?.stop_reason === "tool_use") return { activity: "working", progress: "working" };
+    return { activity: "done", progress: "responding" };
+  }
+
+  /**
+   * Parse one JSONL line and mutate state. Returns true if anything the frontend
+   * cares about (activity or token totals) changed, so an emit should be scheduled.
+   *
+   * Activity and token accounting are DELIBERATELY decoupled: activity is derived
+   * from EVERY main-chain assistant record (last one wins = the live state), while
+   * tokens/context/turnCount are counted once per message id. Gating activity on
+   * the token dedup was the old bug — it kept only the first block (usually
+   * `thinking`) and dropped the `tool_use`, so "working"/"awaiting-choice" never
+   * showed.
    */
   function processLine(s: SessionState, raw: string): boolean {
     let rec: TRecord;
@@ -93,59 +139,77 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
     } catch {
       return false;
     }
+
+    // A freshly-submitted user prompt flips the session to "working" immediately,
+    // closing the lag before Claude's first block record lands (tool_result echoes
+    // and sidechain/subagent prompts are ignored).
+    if (rec.type === "user" && rec.isSidechain !== true && isUserPrompt(rec)) {
+      if (s.metrics.activity !== "working") {
+        s.metrics.activity = "working";
+        s.metrics.progress = "thinking";
+        return true;
+      }
+      return false;
+    }
+
     if (rec.type !== "assistant") return false;
     const usage = rec.message?.usage;
     if (!usage) return false;
 
-    // Deduplicate — Claude Code writes the same API response record twice
-    // (once when streaming begins, once when it ends), causing ~2x overcounting.
+    let changed = false;
+
+    // ── Activity — every main-chain record, NOT gated by the token dedup below.
+    if (rec.isSidechain !== true) {
+      const a = activityOf(rec);
+      if (s.metrics.activity !== a.activity || s.metrics.progress !== a.progress) {
+        s.metrics.activity = a.activity;
+        s.metrics.progress = a.progress;
+        changed = true;
+      }
+      if (a.tool && s.metrics.lastTool !== a.tool) {
+        s.metrics.lastTool = a.tool;
+        changed = true;
+      }
+    }
+
+    // ── Tokens / context / turn count — once per message id. Each block record
+    // repeats the full message usage, so the (id:req) dedup counts it exactly once.
     const msgId = rec.message?.id ?? rec.uuid ?? "";
     const reqId = rec.requestId ?? "";
     const key = `${msgId}:${reqId}`;
-    if (s.seen.has(key)) return false;
-    s.seen.add(key);
+    if (!s.seen.has(key)) {
+      s.seen.add(key);
 
-    const input = usage.input_tokens ?? 0;
-    const output = usage.output_tokens ?? 0;
-    const cacheCreation = usage.cache_creation_input_tokens ?? 0;
-    const cacheRead = usage.cache_read_input_tokens ?? 0;
+      const input = usage.input_tokens ?? 0;
+      const output = usage.output_tokens ?? 0;
+      const cacheCreation = usage.cache_creation_input_tokens ?? 0;
+      const cacheRead = usage.cache_read_input_tokens ?? 0;
 
-    // Cumulative token totals
-    const c = s.metrics.cumulative;
-    c.input += input;
-    c.output += output;
-    c.cacheCreation += cacheCreation;
-    c.cacheRead += cacheRead;
-    c.total = c.input + c.output + c.cacheCreation + c.cacheRead;
+      const c = s.metrics.cumulative;
+      c.input += input;
+      c.output += output;
+      c.cacheCreation += cacheCreation;
+      c.cacheRead += cacheRead;
+      c.total = c.input + c.output + c.cacheCreation + c.cacheRead;
 
-    // Context window — always overwrite with the most recent main-chain turn
-    if (rec.isSidechain !== true) {
-      const model = rec.message?.model;
-      const window = contextWindowFor(model);
-      const used = input + output + cacheCreation + cacheRead;
-      s.metrics.model = model;
-      s.metrics.contextWindow = window;
-      s.metrics.contextUsed = used;
-      s.metrics.contextPct = Math.round((used / window) * 100);
+      // Context window — always overwrite with the most recent main-chain turn
+      if (rec.isSidechain !== true) {
+        const model = rec.message?.model;
+        const window = contextWindowFor(model);
+        const used = input + output + cacheCreation + cacheRead;
+        s.metrics.model = model;
+        s.metrics.contextWindow = window;
+        s.metrics.contextUsed = used;
+        s.metrics.contextPct = Math.round((used / window) * 100);
+      }
+
+      const ts = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
+      s.metrics.lastActivity = isNaN(ts) ? Date.now() : ts;
+      s.metrics.turnCount++;
+      changed = true;
     }
 
-    // Timing
-    const ts = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
-    s.metrics.lastActivity = isNaN(ts) ? Date.now() : ts;
-
-    // Turn count and progress
-    s.metrics.turnCount++;
-    const toolUse = rec.message?.content?.find((item) => item.type === "tool_use");
-    if (toolUse !== undefined && toolUse.name) {
-      s.metrics.lastTool = toolUse.name;
-      s.metrics.progress = `running ${toolUse.name}`;
-      s.metrics.activity = CHOICE_TOOLS.has(toolUse.name) ? "awaiting-choice" : "working";
-    } else {
-      s.metrics.progress = "responding";
-      s.metrics.activity = "done";
-    }
-
-    return true;
+    return changed;
   }
 
   function processChunk(s: SessionState, chunk: string): void {

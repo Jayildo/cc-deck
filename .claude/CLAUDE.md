@@ -35,9 +35,21 @@ no module imports another. Two WS channels: `pty` (raw bytes ↔ xterm.js) and
 - **Transcript is created lazily on the first submitted prompt**, not at startup —
   so `claudeSessionId` discovery (polling `projects/<slug>/*.jsonl`) only resolves
   after the user sends a message. A fresh idle session correctly shows 0 tokens.
-- **Token dedup is mandatory:** Claude writes each response record **twice**
-  (same `message.id`+`requestId`, ~16s apart). Dedup key = `message.id:requestId`,
-  else ~2× overcount.
+- **One record per content block, NOT a double-write.** Claude Code writes each
+  assistant message as **several** JSONL records — one per content block
+  (`thinking`, `text`, `tool_use`, and one per parallel `tool_use`) — **all sharing
+  the same `message.id`+`requestId`** and each repeating the full message `usage`
+  and `stop_reason`. (The old "written twice ~16s apart" note was a misread: the
+  gap was the thinking→tool_use block gap within one message.)
+  - **Token dedup is mandatory:** count once per `message.id:requestId`, else ~Nx
+    overcount (N = block count).
+  - **Activity must NOT be gated by that dedup.** Deriving activity from only the
+    first-seen block (usually `thinking`) drops the `tool_use` block → "working"/
+    "awaiting-choice" never show. `metrics.ts` derives activity on **every**
+    main-chain record (last wins): `tool_use` block name → working /
+    awaiting-choice (CHOICE_TOOLS); else `stop_reason==="tool_use"` → working,
+    `end_turn`/etc → done. A genuine (non-tool_result) `user` record → working
+    immediately, to kill the pre-first-token lag.
 - **Context-%** is the latest main-chain (`isSidechain !== true`) turn's
   `input+cache_read+cache_creation+output` ÷ window (1M for `[1m]`/opus-4.6/sonnet-4.6,
   else 200K). Approximate; drops on `/compact`.
