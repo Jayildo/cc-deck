@@ -500,6 +500,56 @@ input:focus-visible,
 .session-row:hover .close-btn { opacity: 1; }
 .close-btn:hover { color: var(--red); }
 
+/* ── Shortcuts legend (pinned to the sidebar bottom) ─────────────────────── */
+#shortcuts-legend {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 8px 10px 9px;
+  background: var(--surface);
+}
+.legend-title {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+#shortcuts-legend ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+}
+#shortcuts-legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#shortcuts-legend .keys {
+  display: inline-flex;
+  gap: 3px;
+  flex-shrink: 0;
+  min-width: 58px;
+}
+#shortcuts-legend kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  min-width: 10px;
+  text-align: center;
+  padding: 1px 5px;
+  color: var(--text);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+#shortcuts-legend .desc {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* ── Main pane ───────────────────────────────────────────────────────────── */
 #main {
   flex: 1;

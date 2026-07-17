@@ -34,7 +34,23 @@ function onKeydown(e: KeyboardEvent): void {
   } else if (e.key === "Enter") {
     e.preventDefault();
     if (cursorId) onEnter(cursorId);
+  } else if (e.key === "Delete") {
+    e.preventDefault();
+    closeCursored();
   }
+}
+
+/** Del — close the cursored session (same as its × button) and park the cursor on
+ *  a neighbour so keyboard nav keeps working after the row disappears. */
+function closeCursored(): void {
+  if (!cursorId) return;
+  const idx = sessions.findIndex((s) => s.id === cursorId);
+  if (idx < 0) return;
+  const neighbour = sessions[idx + 1] ?? sessions[idx - 1];
+  const closing = cursorId;
+  cursorId = neighbour ? neighbour.id : null;
+  send({ t: "close", id: closing });
+  renderAll(); // move the cursor ring immediately; the row clears on the server's sessions update
 }
 
 function scrollCursorIntoView(): void {
@@ -95,8 +111,8 @@ const DOT_CLASS: Record<string, string> = {
 // SessionMetrics.activity, which the server derives from the latest transcript
 // turn; lifecycle status (exited / pre-first-turn) takes precedence.
 const ACTIVITY: Record<string, { cls: string; label: string }> = {
-  working: { cls: "act-working", label: "작동 중" },
-  "awaiting-choice": { cls: "act-choice", label: "선택 요청" },
+  working: { cls: "act-working", label: "진행 중" },
+  "awaiting-choice": { cls: "act-choice", label: "응답 필요" },
   done: { cls: "act-done", label: "완료" },
 };
 
