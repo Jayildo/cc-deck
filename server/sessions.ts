@@ -48,9 +48,12 @@ const PERMISSION_RE =
 // future reword of the English prompt text (only the menu shape has to hold), so
 // detection degrades gracefully instead of silently dying. It also matches plain
 // choice menus (AskUserQuestion / plan) — the frontend keeps those labelled as
-// "선택 요청" using the transcript, so the overlap is harmless. (❯ alone is a
-// common shell prompt glyph, so we require the "❯ N." + "N." menu pair.)
-const MENU_RE = /❯\s*\d+\.[\s\S]{1,200}?\r?\n\s*\d+\.\s/;
+// "선택 요청" using the transcript, so the overlap is harmless. (The cursor glyph
+// alone is a common shell prompt char, so we require the "❯ N." + "N." menu pair.)
+// Claude Code renders the selected-row cursor as either ❯ (U+276F) or › (U+203A)
+// depending on font/terminal — accept both, else the AskUserQuestion menu (which
+// uses ›) slips past this backup detector.
+const MENU_RE = /[❯›]\s*\d+\.[\s\S]{1,200}?\r?\n\s*\d+\.\s/;
 
 /** Recompute a session's awaitingPermission from its recent output tail.
  *  Returns true if the flag flipped (caller should re-broadcast). */

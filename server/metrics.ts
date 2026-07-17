@@ -62,6 +62,19 @@ const DONE_REASONS = new Set(["end_turn", "stop_sequence", "max_tokens"]);
 // long — long enough to clear the spinner's inter-frame gap. See notePtyOutput.
 const SETTLE_MS = 3000;
 
+// The transcript tailer reads whatever bytes exist at each fs "change" event.
+// A large record (a big AskUserQuestion tool_use, or a multi-KB thinking block —
+// seen at 9KB+) is often flushed across several events, so a read can end in the
+// MIDDLE of a JSON line. Without reassembly that partial line fails JSON.parse and
+// is dropped, and byteOffset advances past it, losing it forever. Because the
+// "awaiting-choice" state rides on a SINGLE line (and so does the end_turn that
+// clears it), one dropped line freezes the row for the whole blocking window.
+// So we buffer the un-terminated tail (as bytes — Korean menu text is multi-byte,
+// so we must not decode across a line boundary) and only parse complete lines.
+// See feedBytes / SessionState.pendingBuf. Cap the buffer so a never-terminated
+// stream can't grow without bound (a real transcript line is well under this).
+const MAX_PENDING = 8 * 1024 * 1024;
+
 // ─── Per-session tracking state ───────────────────────────────────────────────
 
 interface SessionState {
@@ -70,6 +83,9 @@ interface SessionState {
   seen: Set<string>;
   /** Byte offset into the transcript file (for incremental reads). */
   byteOffset: number;
+  /** Un-terminated trailing bytes from the last read, prepended to the next read
+   *  so a JSON line split across fs events is reassembled, not dropped. */
+  pendingBuf: Buffer;
   filePath: string | null;
   watcher: FSWatcher | null;
   debounceTimer: ReturnType<typeof setTimeout> | null;
@@ -228,20 +244,34 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
         raw = "working"; // tool_use / pause_turn / null(mid-stream) = still working
       }
 
-      if (raw === "working") {
-        // Unambiguously working — show it now and cancel any deferred terminal.
+      if (raw === "working" || raw === "awaiting-choice") {
+        // Both are immediate, unambiguous states — show now and cancel any
+        // deferred terminal.
+        //  • "working": a tool is running / mid-stream.
+        //  • "awaiting-choice": Claude is BLOCKED on an AskUserQuestion/ExitPlanMode
+        //    modal and cannot proceed until the user picks. It must NOT go through
+        //    the PTY-silence settle: that gate exists only to avoid a false "완료"
+        //    while a background agent's spinner keeps the PTY ticking. A pending
+        //    choice has no such ambiguity, and its own interactive menu keeps the
+        //    PTY busy — routing it through settle pinned the row to "작동 중" forever
+        //    (it never settled). See notePtyOutput.
         s.pendingTerminal = null;
         if (s.settleTimer !== null) {
           clearTimeout(s.settleTimer);
           s.settleTimer = null;
         }
-        s.metrics.progress = toolUse?.name ? `running ${toolUse.name}` : "responding";
-        if (s.metrics.activity !== "working") changed = true;
-        s.metrics.activity = "working";
+        s.metrics.progress =
+          raw === "awaiting-choice"
+            ? "awaiting choice"
+            : toolUse?.name
+              ? `running ${toolUse.name}`
+              : "responding";
+        if (s.metrics.activity !== raw) changed = true;
+        s.metrics.activity = raw;
       } else {
-        // Terminal per the transcript, but the session may still be draining a
-        // background agent/workflow (the PTY spinner keeps ticking). Defer the
-        // flip to "done"/"awaiting-choice" until the PTY falls silent; keep the
+        // raw === "done": the transcript says the turn ended, but the session may
+        // still be draining a background agent/workflow (the PTY spinner keeps
+        // ticking). Defer the flip to "done" until the PTY falls silent; keep the
         // on-screen activity as-is ("working") until then. See scheduleSettle.
         s.pendingTerminal = raw;
         scheduleSettle(s);
@@ -260,14 +290,32 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
     if (changed) scheduleEmit(s);
   }
 
+  // Reassemble complete lines across reads before parsing. Prepend any leftover
+  // partial line, process everything up to the last newline, and stash the
+  // remainder for next time. Byte-level so a multi-byte char split across the
+  // read boundary isn't corrupted. See MAX_PENDING / pendingBuf.
+  function feedBytes(s: SessionState, buf: Buffer): void {
+    const combined = s.pendingBuf.length ? Buffer.concat([s.pendingBuf, buf]) : buf;
+    const lastNL = combined.lastIndexOf(0x0a);
+    if (lastNL === -1) {
+      // No complete line yet — keep buffering (unless it's grown absurdly large,
+      // which means the stream is malformed; drop it rather than leak memory).
+      s.pendingBuf = combined.length > MAX_PENDING ? Buffer.alloc(0) : Buffer.from(combined);
+      return;
+    }
+    const remainder = combined.subarray(lastNL + 1);
+    s.pendingBuf = remainder.length ? Buffer.from(remainder) : Buffer.alloc(0);
+    processChunk(s, combined.subarray(0, lastNL + 1).toString("utf8"));
+  }
+
   function bindFile(s: SessionState, filePath: string): void {
     s.filePath = filePath;
 
     // Initial full read to catch up on existing transcript content
     try {
-      const content = fs.readFileSync(filePath, "utf8");
-      s.byteOffset = Buffer.byteLength(content, "utf8");
-      processChunk(s, content);
+      const buf = fs.readFileSync(filePath);
+      s.byteOffset = buf.length;
+      feedBytes(s, buf);
     } catch {
       s.byteOffset = 0;
     }
@@ -287,7 +335,7 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
         fs.readSync(fd, buf, 0, len, s.byteOffset);
         fs.closeSync(fd);
         s.byteOffset = size;
-        processChunk(s, buf.toString("utf8"));
+        feedBytes(s, buf);
       } catch {
         // File disappeared or permission error — skip silently
       }
@@ -303,6 +351,7 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
           metrics: makeEmpty(meta.id),
           seen: new Set(),
           byteOffset: 0,
+          pendingBuf: Buffer.alloc(0),
           filePath: null,
           watcher: null,
           debounceTimer: null,
@@ -323,6 +372,7 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
             s.watcher.close().catch(() => undefined);
             s.watcher = null;
             s.byteOffset = 0;
+            s.pendingBuf = Buffer.alloc(0); // new file → drop any half-read tail
             s.seen.clear(); // new file → new message ids; keep cumulative totals
           }
           bindFile(s, fp);
@@ -334,10 +384,21 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
       const s = states.get(id);
       if (!s) return;
       s.lastPtyAt = Date.now();
-      // Fresh PTY output after a transcript-terminal ⇒ the session is still
-      // working (a backgrounded agent/workflow is running its spinner). Flip
-      // back to "working" if we'd tentatively quieted, and keep the settle loop
-      // alive so we still land on the terminal state once the PTY finally stops.
+      // Fresh PTY output ⇒ the session is doing something RIGHT NOW. Two stale
+      // on-screen states must flip back to "working":
+      //   • mid-settle (pendingTerminal set): a backgrounded agent/workflow spinner
+      //     is still ticking after a transcript-terminal — defer the flip as before.
+      //   • already-committed "done": a NEW turn's spinner just started. An idle
+      //     Claude prompt emits NO PTY bytes, so output here is real new activity —
+      //     but the prior fix gated this out, pinning the row to "완료" while Claude
+      //     was visibly working (e.g. a 43s "Crunched" think before the first
+      //     transcript line). Re-arm a "done" settle so a stray late byte still
+      //     falls back to "완료" once the PTY quiets again.
+      // "awaiting-choice" is deliberately left alone: its interactive menu redraws
+      // the PTY while the user is still picking, and must stay "선택 요청".
+      if (s.pendingTerminal === null && s.metrics.activity === "done") {
+        s.pendingTerminal = "done";
+      }
       if (s.pendingTerminal) {
         if (s.metrics.activity !== "working") {
           s.metrics.activity = "working";
