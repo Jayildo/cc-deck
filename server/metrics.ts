@@ -50,6 +50,18 @@ const CHOICE_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 // Claude is still working — so we must NOT flip the row to "done".
 const DONE_REASONS = new Set(["end_turn", "stop_sequence", "max_tokens"]);
 
+// A main-chain turn can hit a terminal stop_reason (end_turn) while the session
+// is STILL working — e.g. it launched a background agent or a dynamic workflow
+// and is now waiting for them to finish. That background work writes NOTHING to
+// this transcript (not even sidechain lines — verified: 12 min of silence), so
+// the transcript alone can't tell "genuinely done" from "waiting on background
+// work" — both look like end_turn followed by quiet. The PTY can: Claude Code's
+// spinner keeps emitting (its elapsed-time counter ticks ≤1s) the whole time it
+// works, and goes quiet only at the idle prompt. So we DEFER committing a
+// terminal ("done"/"awaiting-choice") state until the PTY has been silent this
+// long — long enough to clear the spinner's inter-frame gap. See notePtyOutput.
+const SETTLE_MS = 3000;
+
 // ─── Per-session tracking state ───────────────────────────────────────────────
 
 interface SessionState {
@@ -61,6 +73,13 @@ interface SessionState {
   filePath: string | null;
   watcher: FSWatcher | null;
   debounceTimer: ReturnType<typeof setTimeout> | null;
+  /** Terminal activity ("done"/"awaiting-choice") seen in the transcript but not
+   *  yet shown, because the PTY may still be busy (background agent/workflow).
+   *  Committed only after the PTY goes quiet for SETTLE_MS. */
+  pendingTerminal: "done" | "awaiting-choice" | null;
+  /** ms timestamp of the last PTY byte for this session (0 = none yet). */
+  lastPtyAt: number;
+  settleTimer: ReturnType<typeof setTimeout> | null;
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
@@ -87,6 +106,42 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
       s.debounceTimer = null;
       handlers.onMetrics(snapshot(s));
     }, 150);
+  }
+
+  function emitNow(s: SessionState): void {
+    if (s.debounceTimer !== null) {
+      clearTimeout(s.debounceTimer);
+      s.debounceTimer = null;
+    }
+    handlers.onMetrics(snapshot(s));
+  }
+
+  // Show the deferred terminal state (see SETTLE_MS). Clears the pending flag.
+  function commitTerminal(s: SessionState): void {
+    if (s.settleTimer !== null) {
+      clearTimeout(s.settleTimer);
+      s.settleTimer = null;
+    }
+    const term = s.pendingTerminal;
+    s.pendingTerminal = null;
+    if (!term || s.metrics.activity === term) return;
+    s.metrics.activity = term;
+    s.metrics.progress = term === "awaiting-choice" ? "awaiting choice" : "idle";
+    emitNow(s);
+  }
+
+  // Poll until the PTY has been silent for SETTLE_MS, then commit the terminal
+  // state. Each fresh PTY byte pushes lastPtyAt forward, so an active spinner
+  // (background wait) keeps rescheduling and never lets us flip to "done".
+  function scheduleSettle(s: SessionState): void {
+    if (s.settleTimer !== null) clearTimeout(s.settleTimer);
+    s.settleTimer = setTimeout(() => {
+      s.settleTimer = null;
+      if (!s.pendingTerminal) return;
+      const quiet = Date.now() - s.lastPtyAt;
+      if (quiet >= SETTLE_MS) commitTerminal(s);
+      else scheduleSettle(s);
+    }, SETTLE_MS);
   }
 
   /**
@@ -164,17 +219,33 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
       const toolUse = rec.message?.content?.find((item) => item.type === "tool_use");
       if (toolUse?.name) s.metrics.lastTool = toolUse.name;
 
-      let next: "working" | "awaiting-choice" | "done";
+      let raw: "working" | "awaiting-choice" | "done";
       if (stop && DONE_REASONS.has(stop)) {
-        next = "done"; // turn genuinely ended — user's turn
+        raw = "done"; // main-chain turn ended — but may still be waiting (see below)
       } else if (toolUse?.name && CHOICE_TOOLS.has(toolUse.name)) {
-        next = "awaiting-choice"; // AskUserQuestion / ExitPlanMode — user must pick
+        raw = "awaiting-choice"; // AskUserQuestion / ExitPlanMode — user must pick
       } else {
-        next = "working"; // tool_use / pause_turn / null(mid-stream) = still working
+        raw = "working"; // tool_use / pause_turn / null(mid-stream) = still working
       }
-      s.metrics.progress = toolUse?.name ? `running ${toolUse.name}` : "responding";
-      if (next !== s.metrics.activity) changed = true;
-      s.metrics.activity = next;
+
+      if (raw === "working") {
+        // Unambiguously working — show it now and cancel any deferred terminal.
+        s.pendingTerminal = null;
+        if (s.settleTimer !== null) {
+          clearTimeout(s.settleTimer);
+          s.settleTimer = null;
+        }
+        s.metrics.progress = toolUse?.name ? `running ${toolUse.name}` : "responding";
+        if (s.metrics.activity !== "working") changed = true;
+        s.metrics.activity = "working";
+      } else {
+        // Terminal per the transcript, but the session may still be draining a
+        // background agent/workflow (the PTY spinner keeps ticking). Defer the
+        // flip to "done"/"awaiting-choice" until the PTY falls silent; keep the
+        // on-screen activity as-is ("working") until then. See scheduleSettle.
+        s.pendingTerminal = raw;
+        scheduleSettle(s);
+      }
     }
 
     return changed;
@@ -235,6 +306,9 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
           filePath: null,
           watcher: null,
           debounceTimer: null,
+          pendingTerminal: null,
+          lastPtyAt: 0,
+          settleTimer: null,
         };
         states.set(meta.id, s);
       }
@@ -256,10 +330,29 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
       }
     },
 
+    notePtyOutput(id: string): void {
+      const s = states.get(id);
+      if (!s) return;
+      s.lastPtyAt = Date.now();
+      // Fresh PTY output after a transcript-terminal ⇒ the session is still
+      // working (a backgrounded agent/workflow is running its spinner). Flip
+      // back to "working" if we'd tentatively quieted, and keep the settle loop
+      // alive so we still land on the terminal state once the PTY finally stops.
+      if (s.pendingTerminal) {
+        if (s.metrics.activity !== "working") {
+          s.metrics.activity = "working";
+          s.metrics.progress = "responding";
+          emitNow(s);
+        }
+        if (s.settleTimer === null) scheduleSettle(s);
+      }
+    },
+
     untrack(id: string): void {
       const s = states.get(id);
       if (!s) return;
       if (s.debounceTimer !== null) clearTimeout(s.debounceTimer);
+      if (s.settleTimer !== null) clearTimeout(s.settleTimer);
       s.watcher?.close().catch(() => undefined);
       states.delete(id);
     },
@@ -276,6 +369,7 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
     dispose(): void {
       for (const s of states.values()) {
         if (s.debounceTimer !== null) clearTimeout(s.debounceTimer);
+        if (s.settleTimer !== null) clearTimeout(s.settleTimer);
         s.watcher?.close().catch(() => undefined);
       }
       states.clear();

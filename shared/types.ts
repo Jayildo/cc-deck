@@ -184,6 +184,10 @@ export interface MetricsEngine {
    *  tailer once meta.claudeSessionId is known. */
   track(meta: SessionMeta): void;
   untrack(id: string): void;
+  /** Heartbeat: the session emitted PTY output just now. Lets the engine tell a
+   *  genuinely-finished turn from one still waiting on a background agent/
+   *  workflow (whose spinner keeps the PTY alive but writes no transcript). */
+  notePtyOutput(id: string): void;
   get(id: string): SessionMetrics | undefined;
   getAll(): SessionMetrics[];
   dispose(): void;

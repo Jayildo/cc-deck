@@ -48,7 +48,10 @@ const metrics = createMetricsEngine({
 });
 
 const sessions = createSessionManager({
-  onData: (id, data) => sendToAttached(id, { t: "pty", id, data }),
+  onData: (id, data) => {
+    metrics.notePtyOutput(id); // heartbeat: distinguishes "done" from background-wait
+    sendToAttached(id, { t: "pty", id, data });
+  },
   onSessions: (list) => {
     for (const meta of list) metrics.track(meta);
     broadcast({ t: "sessions", sessions: list });
