@@ -27,6 +27,8 @@ interface TMessage {
   model?: string;
   usage?: TUsage;
   content?: TContent[];
+  /** API stop reason — the authoritative "turn over vs still working" signal. */
+  stop_reason?: string | null;
 }
 
 interface TRecord {
@@ -42,6 +44,11 @@ interface TRecord {
 // than Claude continuing to work — surfaced in the sidebar as "awaiting-choice".
 // Names must match the transcript tool_use `name` exactly.
 const CHOICE_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
+
+// stop_reason values that mean the turn is genuinely OVER (user's turn now).
+// Anything else ("tool_use", "pause_turn", null while still streaming) means
+// Claude is still working — so we must NOT flip the row to "done".
+const DONE_REASONS = new Set(["end_turn", "stop_sequence", "max_tokens"]);
 
 // ─── Per-session tracking state ───────────────────────────────────────────────
 
@@ -84,7 +91,8 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
 
   /**
    * Parse one JSONL line and mutate state.
-   * Returns true if a new (deduped) assistant turn was processed.
+   * Returns true if anything the UI cares about changed (new token totals OR a
+   * change in activity), so the caller knows to schedule an emit.
    */
   function processLine(s: SessionState, raw: string): boolean {
     let rec: TRecord;
@@ -97,55 +105,79 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
     const usage = rec.message?.usage;
     if (!usage) return false;
 
-    // Deduplicate — Claude Code writes the same API response record twice
-    // (once when streaming begins, once when it ends), causing ~2x overcounting.
+    // Claude Code writes ONE API response as several JSONL lines — one per content
+    // block (thinking, text, tool_use, …) — all sharing the same message.id +
+    // requestId (and echoing the same usage). We must therefore split concerns:
+    //   • token/context/turnCount: count ONCE per response (dedup key gates it),
+    //     else ~Nx overcount.
+    //   • activity: derive from EVERY line (see below) — the authoritative
+    //     stop_reason / real tool_use arrives on a LATER line than the first
+    //     "thinking"/"text" line, so dedup-gating activity would misread the turn.
     const msgId = rec.message?.id ?? rec.uuid ?? "";
     const reqId = rec.requestId ?? "";
     const key = `${msgId}:${reqId}`;
-    if (s.seen.has(key)) return false;
-    s.seen.add(key);
+    const isNew = !s.seen.has(key);
+    if (isNew) s.seen.add(key);
 
-    const input = usage.input_tokens ?? 0;
-    const output = usage.output_tokens ?? 0;
-    const cacheCreation = usage.cache_creation_input_tokens ?? 0;
-    const cacheRead = usage.cache_read_input_tokens ?? 0;
+    let changed = false;
 
-    // Cumulative token totals
-    const c = s.metrics.cumulative;
-    c.input += input;
-    c.output += output;
-    c.cacheCreation += cacheCreation;
-    c.cacheRead += cacheRead;
-    c.total = c.input + c.output + c.cacheCreation + c.cacheRead;
+    // ── Tokens + context window + turn count: once per response ──
+    if (isNew) {
+      const input = usage.input_tokens ?? 0;
+      const output = usage.output_tokens ?? 0;
+      const cacheCreation = usage.cache_creation_input_tokens ?? 0;
+      const cacheRead = usage.cache_read_input_tokens ?? 0;
 
-    // Context window — always overwrite with the most recent main-chain turn
-    if (rec.isSidechain !== true) {
-      const model = rec.message?.model;
-      const window = contextWindowFor(model);
-      const used = input + output + cacheCreation + cacheRead;
-      s.metrics.model = model;
-      s.metrics.contextWindow = window;
-      s.metrics.contextUsed = used;
-      s.metrics.contextPct = Math.round((used / window) * 100);
+      const c = s.metrics.cumulative;
+      c.input += input;
+      c.output += output;
+      c.cacheCreation += cacheCreation;
+      c.cacheRead += cacheRead;
+      c.total = c.input + c.output + c.cacheCreation + c.cacheRead;
+
+      // Context window — always overwrite with the most recent main-chain turn
+      if (rec.isSidechain !== true) {
+        const model = rec.message?.model;
+        const window = contextWindowFor(model);
+        const used = input + output + cacheCreation + cacheRead;
+        s.metrics.model = model;
+        s.metrics.contextWindow = window;
+        s.metrics.contextUsed = used;
+        s.metrics.contextPct = Math.round((used / window) * 100);
+      }
+
+      s.metrics.turnCount++;
+      changed = true;
     }
 
-    // Timing
+    // Timing — cheap, refresh on every line
     const ts = rec.timestamp ? Date.parse(rec.timestamp) : NaN;
     s.metrics.lastActivity = isNaN(ts) ? Date.now() : ts;
 
-    // Turn count and progress
-    s.metrics.turnCount++;
-    const toolUse = rec.message?.content?.find((item) => item.type === "tool_use");
-    if (toolUse !== undefined && toolUse.name) {
-      s.metrics.lastTool = toolUse.name;
-      s.metrics.progress = `running ${toolUse.name}`;
-      s.metrics.activity = CHOICE_TOOLS.has(toolUse.name) ? "awaiting-choice" : "working";
-    } else {
-      s.metrics.progress = "responding";
-      s.metrics.activity = "done";
+    // ── Activity: derived from EVERY main-chain line, keyed off stop_reason ──
+    // stop_reason is the real "turn over vs still working" signal. A text/thinking
+    // line carrying stop_reason:"tool_use" means Claude is STILL working (a tool
+    // call follows on a later line) — the old logic mistook it for "done", which
+    // is why rows blinked "완료" at the start of and all through a turn.
+    if (rec.isSidechain !== true) {
+      const stop = rec.message?.stop_reason;
+      const toolUse = rec.message?.content?.find((item) => item.type === "tool_use");
+      if (toolUse?.name) s.metrics.lastTool = toolUse.name;
+
+      let next: "working" | "awaiting-choice" | "done";
+      if (stop && DONE_REASONS.has(stop)) {
+        next = "done"; // turn genuinely ended — user's turn
+      } else if (toolUse?.name && CHOICE_TOOLS.has(toolUse.name)) {
+        next = "awaiting-choice"; // AskUserQuestion / ExitPlanMode — user must pick
+      } else {
+        next = "working"; // tool_use / pause_turn / null(mid-stream) = still working
+      }
+      s.metrics.progress = toolUse?.name ? `running ${toolUse.name}` : "responding";
+      if (next !== s.metrics.activity) changed = true;
+      s.metrics.activity = next;
     }
 
-    return true;
+    return changed;
   }
 
   function processChunk(s: SessionState, chunk: string): void {

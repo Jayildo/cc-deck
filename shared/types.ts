@@ -33,6 +33,11 @@ export interface SessionMeta {
   status: SessionStatus;
   /** epoch ms */
   createdAt: number;
+  /** True while the terminal is showing a permission prompt ("Do you want to
+   *  proceed?"). Detected from the PTY stream, not the transcript — a permission
+   *  request never reaches the .jsonl. Cleared when the user answers (any input).
+   *  Surfaced in the sidebar as a distinct "승인 대기" attention state. */
+  awaitingPermission?: boolean;
 }
 
 export interface TokenBucket {

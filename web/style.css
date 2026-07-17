@@ -582,6 +582,10 @@ input:focus-visible,
 /* done — green: turn ended, waiting on the user */
 .act-done    .act-led   { background: var(--green); }
 .act-done    .act-label { color: var(--green); }
+/* permission — red, glowing pulse: the terminal is blocked on an approval prompt.
+   Red (not amber) so it reads apart from "working" and signals "you must act". */
+.act-permission .act-led   { background: var(--red); box-shadow: 0 0 6px var(--red); animation: pulse 1.1s ease-in-out infinite; }
+.act-permission .act-label { color: var(--red); font-weight: 600; }
 
 /* A finished session the user hasn't opened yet blinks to catch the eye — the
    whole row background pulses green and the 완료 badge fades in/out. It stops
@@ -610,6 +614,51 @@ input:focus-visible,
 .session-row.row-done:not(.selected) .act-done .act-led {
   box-shadow: 0 0 12px var(--green), 0 0 4px var(--green); /* hard glow reinforces the pulse */
 }
+/* Same idea for a session waiting on a choice (AskUserQuestion / ExitPlanMode) —
+   blinks blue so it reads as "선택 요청" rather than a finished "완료". The badge
+   fade (blink-done-badge) is colour-agnostic, so it's reused here. */
+@keyframes blink-choice-row {
+  0%, 49% {
+    background: color-mix(in srgb, var(--blue) 22%, transparent);
+    box-shadow: inset 3px 0 0 var(--blue);
+  }
+  50%, 100% {
+    background: color-mix(in srgb, var(--blue) 62%, transparent);
+    box-shadow: inset 3px 0 0 var(--blue), 0 0 14px color-mix(in srgb, var(--blue) 70%, transparent);
+  }
+}
+.session-row.row-choice:not(.selected) {
+  animation: blink-choice-row 0.6s linear infinite;
+}
+.session-row.row-choice:not(.selected) .act-choice {
+  animation: blink-done-badge 0.6s ease-in-out infinite;
+  transform-origin: left center;
+}
+.session-row.row-choice:not(.selected) .act-choice .act-led {
+  box-shadow: 0 0 12px var(--blue), 0 0 4px var(--blue);
+}
+/* And red for a session blocked on a permission prompt — the loudest attention
+   state (the terminal literally can't proceed until the user answers). */
+@keyframes blink-permission-row {
+  0%, 49% {
+    background: color-mix(in srgb, var(--red) 24%, transparent);
+    box-shadow: inset 3px 0 0 var(--red);
+  }
+  50%, 100% {
+    background: color-mix(in srgb, var(--red) 66%, transparent);
+    box-shadow: inset 3px 0 0 var(--red), 0 0 14px color-mix(in srgb, var(--red) 72%, transparent);
+  }
+}
+.session-row.row-permission:not(.selected) {
+  animation: blink-permission-row 0.5s linear infinite;
+}
+.session-row.row-permission:not(.selected) .act-permission {
+  animation: blink-done-badge 0.5s ease-in-out infinite;
+  transform-origin: left center;
+}
+.session-row.row-permission:not(.selected) .act-permission .act-led {
+  box-shadow: 0 0 12px var(--red), 0 0 4px var(--red);
+}
 /* Respect users who ask the OS to reduce motion — show a steady tint instead. */
 @media (prefers-reduced-motion: reduce) {
   .session-row.row-done:not(.selected) {
@@ -618,6 +667,22 @@ input:focus-visible,
     box-shadow: inset 3px 0 0 var(--green);
   }
   .session-row.row-done:not(.selected) .act-done {
+    animation: none;
+  }
+  .session-row.row-choice:not(.selected) {
+    animation: none;
+    background: color-mix(in srgb, var(--blue) 40%, transparent);
+    box-shadow: inset 3px 0 0 var(--blue);
+  }
+  .session-row.row-choice:not(.selected) .act-choice {
+    animation: none;
+  }
+  .session-row.row-permission:not(.selected) {
+    animation: none;
+    background: color-mix(in srgb, var(--red) 44%, transparent);
+    box-shadow: inset 3px 0 0 var(--red);
+  }
+  .session-row.row-permission:not(.selected) .act-permission {
     animation: none;
   }
 }

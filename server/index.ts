@@ -6,7 +6,7 @@ import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 
 import { config } from "./config.js";
-import { ensureDeckDir } from "./util.js";
+import { ensureDeckDir, claudeVersionWarning } from "./util.js";
 import { AUTH_TOKEN, isAllowedOrigin, tokenFromQuery, timingSafeEqual } from "./auth.js";
 import { createSessionManager } from "./sessions.js";
 import { createMetricsEngine } from "./metrics.js";
@@ -25,6 +25,12 @@ interface Client {
   attached: Set<string>;
 }
 const clients = new Set<Client>();
+
+// If the installed Claude Code differs from the version the permission-prompt
+// detector was verified against, we warn the user (a toast) so a silently-rotted
+// detector never reads as "cc-deck is broken". Computed once, off the boot path
+// (claude --version can take ~1s through a login shell), then pushed to clients.
+let claudeWarn: string | null = null;
 
 // Monotonic suffix so same-name files dropped in the same millisecond don't collide.
 let dropSeq = 0;
@@ -52,6 +58,20 @@ const sessions = createSessionManager({
     broadcast({ t: "exit", id, code });
   },
 });
+
+// Compute the Claude Code version warning once, off the boot path so a slow
+// `claude --version` never delays server start. Push to anyone already connected.
+setTimeout(() => {
+  try {
+    claudeWarn = claudeVersionWarning();
+    if (claudeWarn) {
+      console.warn("[cc-deck]", claudeWarn);
+      broadcast({ t: "error", message: claudeWarn });
+    }
+  } catch (err) {
+    console.error("[cc-deck] version check failed (non-fatal):", err);
+  }
+}, 100);
 
 const usage = createUsagePoller({
   onUsage: (u) => broadcast({ t: "usage", usage: u }),
@@ -140,6 +160,8 @@ app.get("/ws", { websocket: true }, async (socket, req) => {
     usage: usage.get(),
     projects: await projects.lists(),
   });
+  // Surface the CLI-version warning (if any) as a toast on every page load.
+  if (claudeWarn) client.send({ t: "error", message: claudeWarn });
 
   socket.on("message", async (raw: Buffer) => {
     let msg: ClientMsg;

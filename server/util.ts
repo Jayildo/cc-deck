@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { config } from "./config.js";
 
 /**
@@ -100,4 +101,45 @@ export function contextWindowFor(model: string | undefined): number {
     return big;
   }
   return def;
+}
+
+// ── Claude Code version watch ─────────────────────────────────────────────────
+// The permission-prompt detector (server/sessions.ts) matches English strings in
+// the CLI's UI. If a future Claude Code changes that wording, detection could
+// silently stop working. To make that FAILURE VISIBLE instead of silent, we
+// record the version this detector was last verified against and warn the user
+// (a toast on page load) whenever the installed CLI differs — so they know to
+// tell Claude to re-verify, rather than assuming cc-deck is broken.
+//
+// ⚠️ WHEN RE-VERIFYING the permission strings against a new CLI, bump this to the
+// version you verified against so the warning clears.
+export const VERIFIED_CLAUDE_VERSION = "2.1.212";
+
+/** Best-effort: read the installed `claude --version` (e.g. "2.1.212"). Returns
+ *  null if claude isn't found or the call fails — the warning just won't fire. */
+export function detectClaudeVersion(): string | null {
+  const isWin = process.platform === "win32";
+  const shell = isWin ? (process.env.COMSPEC ?? "cmd.exe") : (process.env.SHELL ?? "/bin/zsh");
+  // Match how sessions.ts launches claude: a login+interactive shell so the
+  // user's real PATH (~/.local/bin, Homebrew, shell functions) is in scope even
+  // when cc-deck runs under launchd/systemd with a minimal PATH.
+  const args = isWin ? ["/d", "/s", "/c", "claude --version"] : ["-l", "-i", "-c", "claude --version"];
+  try {
+    const out = execFileSync(shell, args, { encoding: "utf8", timeout: 8000, stdio: ["ignore", "pipe", "ignore"] });
+    return out.match(/(\d+\.\d+\.\d+)/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** If the installed CLI differs from the verified version, return a user-facing
+ *  warning string; otherwise null. Computed once at startup. */
+export function claudeVersionWarning(): string | null {
+  const installed = detectClaudeVersion();
+  if (!installed || installed === VERIFIED_CLAUDE_VERSION) return null;
+  return (
+    `⚠️ Claude Code가 ${VERIFIED_CLAUDE_VERSION} → ${installed} 로 바뀌었어요. ` +
+    `권한 승인창 감지는 ${VERIFIED_CLAUDE_VERSION} 기준으로 검증된 거라, 승인 대기인데 안 깜빡이면 ` +
+    `문구가 바뀐 것일 수 있어요. 그때 클로드에게 "권한 깜빡임 재검증"이라고만 해주세요.`
+  );
 }

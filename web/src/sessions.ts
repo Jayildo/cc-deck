@@ -116,6 +116,14 @@ const ACTIVITY: Record<string, { cls: string; label: string }> = {
 function activityView(s: SessionMeta, m: SessionMetrics | undefined): { cls: string; label: string } {
   if (s.status === "exited") return { cls: "act-exited", label: "종료" };
   const a = m?.activity;
+  // A menu on the terminal (awaitingPermission, PTY-derived) is the most urgent
+  // user gate. But the structural detector also fires on ordinary choice prompts;
+  // when the transcript already knows it's a choice (AskUserQuestion/plan), keep
+  // the precise blue "선택 요청" — otherwise it's a permission prompt → red.
+  if (s.awaitingPermission) {
+    if (a === "awaiting-choice") return ACTIVITY["awaiting-choice"]!;
+    return { cls: "act-permission", label: "승인 대기" };
+  }
   if (a && ACTIVITY[a]) return ACTIVITY[a]!;
   return { cls: "act-idle", label: "대기" }; // starting / before the first prompt
 }
@@ -150,12 +158,20 @@ function buildRow(s: SessionMeta): HTMLElement {
   const isSelected = s.id === selectedId;
   const isCursor = s.id === cursorId;
 
-  // Mark finished-but-unopened sessions so the row can blink for attention
-  // until the user selects it (see .row-done in style.css).
-  const isDone = act.cls === "act-done";
+  // Mark sessions that need the user so the row blinks for attention until
+  // selected: permission ("승인 대기", amber) · choice ("선택 요청", blue) · finished
+  // ("완료", green). Working sessions never blink. (see .row-* in style.css)
+  const attnClass =
+    act.cls === "act-permission"
+      ? " row-permission"
+      : act.cls === "act-done"
+        ? " row-done"
+        : act.cls === "act-choice"
+          ? " row-choice"
+          : "";
   const el = document.createElement("div");
   el.className =
-    `session-row${isSelected ? " selected" : ""}${isCursor ? " cursor" : ""}${isDone ? " row-done" : ""}`;
+    `session-row${isSelected ? " selected" : ""}${isCursor ? " cursor" : ""}${attnClass}`;
   el.setAttribute("data-sid", s.id);
   el.innerHTML = `
     <div class="row-header">
