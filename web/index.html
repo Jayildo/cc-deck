@@ -50,7 +50,6 @@
         <!-- Sidebar: session list ─────────────────────────────────────────── -->
         <aside id="sidebar">
           <button id="new-session-btn">+ New Session</button>
-          <p class="start-hint">세션 시작하면 <code>/start</code>로 이전 작업내역을 불러오세요</p>
           <div id="new-session-form" class="hidden">
             <input id="cwd-input" type="text" placeholder="e.g. C:/project/my-app" spellcheck="false" />
             <div class="form-actions">
@@ -86,7 +85,10 @@
         <main id="main">
           <div id="terminal-container">
             <div id="terminal-wrap"></div>
-            <div id="empty-state">Select or open a session to begin</div>
+            <div id="empty-state">
+              <div class="empty-title">Select or open a session to begin</div>
+              <p class="start-hint">세션 시작하면 <code>/start</code>로 이전 작업내역을 불러오세요</p>
+            </div>
           </div>
           <div id="metrics-strip" class="hidden">
             <span id="m-model">—</span>
