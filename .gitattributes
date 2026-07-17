@@ -1,0 +1,30 @@
+# Normalize line endings across Windows + macOS collaborators.
+# The repo's canonical form is LF; Git checks out LF on every platform, so a
+# Windows editor saving CRLF no longer shows up as a whole-file diff.
+#
+# NOTE: adding this file does not rewrite existing files by itself. To apply it
+# in one clean pass (recommended, do it once and coordinate with collaborators):
+#   git add --renormalize .
+#   git commit -m "chore: normalize line endings to LF"
+# Everyone else then re-pulls (or re-clones) to avoid a churn storm.
+
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF to run correctly
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
+*.vbs  text eol=crlf
+
+# Unix shell scripts must keep LF
+*.sh   text eol=lf
+
+# Binary assets — Git must never touch these
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary

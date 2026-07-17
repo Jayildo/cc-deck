@@ -1,0 +1,43 @@
+name: CI
+
+# Catch "works on my machine" regressions before they hit main. Runs the same
+# typecheck + build on both a Windows and a macOS runner, so a change that
+# breaks one platform's PTY/path handling fails the check instead of the
+# other developer's clone.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Don't cancel the macOS job when Windows fails (or vice versa) — we want
+      # to see both results on every run.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # node-pty (@lydell/node-pty) ships N-API prebuilds, so this is a plain
+      # install on both runners; it only falls back to a native build if a
+      # prebuild is missing for the runner's arch.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build web bundle
+        run: npm run build
