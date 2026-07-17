@@ -1,4 +1,23 @@
+# Dependencies
 node_modules/
+
+# Build output
 web/dist/
+
+# Logs
 *.log
+
+# Secrets / credentials — NEVER commit these
+.env
+.env.*
+*.credentials.json
+.credentials.json
+
+# Claude Code local data: transcripts hold full conversation content,
+# settings.local.json holds per-machine permission grants
+*.jsonl
+.claude/settings.local.json
+
+# OS / editor cruft
 .DS_Store
+Thumbs.db
