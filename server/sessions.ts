@@ -107,9 +107,18 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
     // server (node-pty rethrows from a worker thread, uncatchable here). Via
     // cmd.exe, claude.cmd resolves through PATHEXT and a missing binary degrades
     // to terminal output instead of a crash.
+    // macOS/Linux: launch claude through a LOGIN + INTERACTIVE shell
+    // (`$SHELL -l -i -c claude`) rather than spawning "claude" directly. cc-deck may
+    // run under launchd/systemd, whose parent process carries only a minimal PATH
+    // (/usr/bin:/bin:/usr/sbin:/sbin); spawning the bare binary then fails with
+    // "ioctl(2) failed, EBADF" and the session exits immediately. A login+interactive
+    // shell sources the user's profile (~/.zprofile, ~/.zshrc), restoring the real
+    // PATH (~/.local/bin, Homebrew, …) and any `claude` shell function — mirroring how
+    // the user opens claude in Terminal. If claude is still missing it degrades to a
+    // terminal message instead of crashing the server.
     const isWin = process.platform === "win32";
-    const claudeFile = isWin ? (process.env.COMSPEC ?? "cmd.exe") : "claude";
-    const claudeArgs = isWin ? ["/d", "/s", "/c", "claude"] : [];
+    const claudeFile = isWin ? (process.env.COMSPEC ?? "cmd.exe") : (process.env.SHELL ?? "/bin/zsh");
+    const claudeArgs = isWin ? ["/d", "/s", "/c", "claude"] : ["-l", "-i", "-c", "claude"];
 
     // Clean env: if cc-deck was itself launched from inside a Claude Code session,
     // the inherited CLAUDE_CODE* vars would make the child think it is nested.
