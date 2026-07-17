@@ -119,6 +119,7 @@ export type ClientMsg =
   | { t: "attach"; id: string } // subscribe to a session's pty stream (server replays scrollback)
   | { t: "input"; id: string; data: string }
   | { t: "pasteImage"; id: string; ext: string; dataB64: string } // clipboard image → saved server-side, its path typed into the session
+  | { t: "dropFile"; id: string; name: string; dataB64: string } // OS drag-and-drop → saved server-side (keeping its name), its path typed into the session
   | { t: "resize"; id: string; cols: number; rows: number }
   | { t: "close"; id: string }
   | { t: "refreshUsage" }

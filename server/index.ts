@@ -26,6 +26,9 @@ interface Client {
 }
 const clients = new Set<Client>();
 
+// Monotonic suffix so same-name files dropped in the same millisecond don't collide.
+let dropSeq = 0;
+
 function broadcast(msg: ServerMsg): void {
   for (const c of clients) c.send(msg);
 }
@@ -181,6 +184,21 @@ app.get("/ws", { websocket: true }, async (socket, req) => {
           sessions.input(msg.id, file.replace(/\\/g, "/") + " ");
           break;
         }
+        case "dropFile": {
+          // OS drag-and-drop: the browser hands us the file's bytes but never
+          // its real path (security), so — like pasteImage — we save the bytes
+          // and type the saved path into the session. We keep the original file
+          // name (readable for Claude) and add a counter so concurrent drops of
+          // the same name don't clobber each other.
+          const raw = path.basename(msg.name).replace(/[^\w.\-]+/g, "_") || "file";
+          const ext = path.extname(raw);
+          const stem = ext ? raw.slice(0, -ext.length) : raw;
+          await fsp.mkdir(config.paths.pasteDir, { recursive: true });
+          const file = path.join(config.paths.pasteDir, `${stem}-${Date.now()}-${dropSeq++}${ext}`);
+          await fsp.writeFile(file, Buffer.from(msg.dataB64, "base64"));
+          sessions.input(msg.id, file.replace(/\\/g, "/") + " ");
+          break;
+        }
         case "resize":
           sessions.resize(msg.id, msg.cols, msg.rows);
           break;
@@ -220,6 +238,34 @@ app.get("/ws", { websocket: true }, async (socket, req) => {
 
   socket.on("close", () => clients.delete(client));
 });
+
+// Pasted/dropped files pile up in pasteDir over time. Sweep anything older than
+// a week — the path was already typed into a session long ago, so old copies are
+// dead weight. Runs at startup and once a day after.
+const PASTE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+async function cleanupPasteDir(): Promise<void> {
+  try {
+    const dir = config.paths.pasteDir;
+    const names = await fsp.readdir(dir).catch(() => [] as string[]);
+    const cutoff = Date.now() - PASTE_TTL_MS;
+    await Promise.all(
+      names.map(async (name) => {
+        const p = path.join(dir, name);
+        try {
+          const st = await fsp.stat(p);
+          if (st.isFile() && st.mtimeMs < cutoff) await fsp.rm(p, { force: true });
+        } catch {
+          // file vanished / race — ignore
+        }
+      }),
+    );
+  } catch {
+    // dir missing or unreadable — nothing to clean
+  }
+}
+void cleanupPasteDir();
+const pasteCleanupTimer = setInterval(() => void cleanupPasteDir(), 24 * 60 * 60 * 1000);
+pasteCleanupTimer.unref?.(); // don't keep the process alive just for the sweep
 
 // Serve the built frontend in production (web/dist). In dev, Vite serves it.
 if (fs.existsSync(config.paths.webDist)) {

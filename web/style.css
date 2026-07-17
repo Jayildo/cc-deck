@@ -140,6 +140,42 @@ input:focus-visible,
   flex-shrink: 0;
 }
 
+/* ── Pinned project quick-launch tabs (the `cc` menu, as top tabs) ────────── */
+#project-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.qtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 5px 11px;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+.qtab:hover { background: var(--surface); border-color: var(--accent); }
+.qtab:active { transform: translateY(1px); }
+.qtab-emoji { font-size: 14px; line-height: 1; }
+.qtab-label { font-weight: 500; }
+
 #usage-windows {
   display: flex;
   align-items: center;
@@ -282,6 +318,21 @@ input:focus-visible,
 }
 #new-session-btn:hover { background: var(--border); }
 
+.start-hint {
+  margin: 7px 10px 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.start-hint code {
+  font-family: var(--font-mono);
+  color: var(--text);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
 #new-session-form {
   margin: 8px 10px;
   display: flex;
@@ -417,6 +468,55 @@ input:focus-visible,
   outline: none; /* the .cursor ring is the focus indicator */
 }
 
+/* ── Shortcut cheat-sheet (sidebar footer) ───────────────────────────────── */
+#shortcuts-cheat {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 8px 10px 10px;
+  max-height: 42vh;
+  overflow-y: auto;
+  background: var(--surface);
+}
+#shortcuts-cheat > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  user-select: none;
+  list-style: none; /* hide the default triangle; we draw our own below */
+}
+#shortcuts-cheat > summary::-webkit-details-marker { display: none; }
+#shortcuts-cheat > summary::before { content: "▸ "; }
+#shortcuts-cheat[open] > summary::before { content: "▾ "; }
+#shortcuts-cheat dl {
+  margin: 8px 0 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 8px;
+  align-items: baseline;
+}
+#shortcuts-cheat dt {
+  justify-self: start;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+#shortcuts-cheat dd {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+/* Small gap separating the top "자주 쓰는 것" group from the rest. */
+#shortcuts-cheat .cheat-gap {
+  margin-top: 9px;
+}
+
 .row-header {
   display: flex;
   align-items: center;
@@ -479,9 +579,40 @@ input:focus-visible,
 /* awaiting-choice — blue, glowing pulse: needs the user to pick an option */
 .act-choice  .act-led   { background: var(--blue); box-shadow: 0 0 6px var(--blue); animation: pulse 1.5s ease-in-out infinite; }
 .act-choice  .act-label { color: var(--blue); font-weight: 600; }
-/* done — green, calm: turn ended, waiting on the user */
+/* done — green: turn ended, waiting on the user */
 .act-done    .act-led   { background: var(--green); }
 .act-done    .act-label { color: var(--green); }
+
+/* A finished session the user hasn't opened yet blinks to catch the eye — the
+   whole row background pulses green and the 완료 badge fades in/out. It stops
+   the moment the row is selected (:not(.selected)), i.e. once acknowledged. */
+@keyframes blink-done-row {
+  0%, 100% { background: transparent; }
+  50%       { background: color-mix(in srgb, var(--green) 15%, transparent); }
+}
+@keyframes blink-done-badge {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+.session-row.row-done:not(.selected) {
+  animation: blink-done-row 1.15s ease-in-out infinite;
+}
+.session-row.row-done:not(.selected) .act-done {
+  animation: blink-done-badge 1.15s ease-in-out infinite;
+}
+.session-row.row-done:not(.selected) .act-done .act-led {
+  box-shadow: 0 0 6px var(--green); /* soft glow reinforces the pulse */
+}
+/* Respect users who ask the OS to reduce motion — show a steady tint instead. */
+@media (prefers-reduced-motion: reduce) {
+  .session-row.row-done:not(.selected) {
+    animation: none;
+    background: color-mix(in srgb, var(--green) 12%, transparent);
+  }
+  .session-row.row-done:not(.selected) .act-done {
+    animation: none;
+  }
+}
 /* idle (pre-first-prompt) / exited — muted */
 .act-idle    .act-led,
 .act-exited  .act-led   { background: var(--border); }
@@ -518,6 +649,24 @@ input:focus-visible,
 #terminal-wrap {
   position: absolute;
   inset: 8px;
+}
+
+/* Highlight the terminal while a file is dragged over it, so it's clear where
+   to drop. Toggled by the dragover/dragleave handlers in terminal.ts. */
+#terminal-wrap.drag-over::after {
+  content: "여기에 놓기 → 터미널에 입력됩니다";
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--fg, #fff);
+  background: color-mix(in srgb, var(--accent, #4a9eff) 18%, transparent);
+  border: 2px dashed var(--accent, #4a9eff);
+  border-radius: 6px;
+  pointer-events: none;
 }
 
 /* Each xterm instance lives in a .xterm-wrap div (display: none until active). */

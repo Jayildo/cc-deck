@@ -51,6 +51,19 @@ function moveCursor(delta: number): void {
   scrollCursorIntoView();
 }
 
+/**
+ * Return the session id `delta` steps from the currently selected one (clamped
+ * at both ends). Used by the global Shift+Arrow shortcut to hop between sessions
+ * without going back to the sidebar first.
+ */
+export function siblingSession(delta: number): string | null {
+  if (!sessions.length) return null;
+  const cur = sessions.findIndex((s) => s.id === selectedId);
+  const base = cur < 0 ? 0 : cur;
+  const next = Math.max(0, Math.min(sessions.length - 1, base + delta));
+  return sessions[next]?.id ?? null;
+}
+
 /** Enter keyboard-nav mode: focus the list and put the cursor on the active row. */
 export function focusSidebar(): void {
   cursorId =
@@ -137,8 +150,12 @@ function buildRow(s: SessionMeta): HTMLElement {
   const isSelected = s.id === selectedId;
   const isCursor = s.id === cursorId;
 
+  // Mark finished-but-unopened sessions so the row can blink for attention
+  // until the user selects it (see .row-done in style.css).
+  const isDone = act.cls === "act-done";
   const el = document.createElement("div");
-  el.className = `session-row${isSelected ? " selected" : ""}${isCursor ? " cursor" : ""}`;
+  el.className =
+    `session-row${isSelected ? " selected" : ""}${isCursor ? " cursor" : ""}${isDone ? " row-done" : ""}`;
   el.setAttribute("data-sid", s.id);
   el.innerHTML = `
     <div class="row-header">

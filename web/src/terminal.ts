@@ -36,6 +36,61 @@ export function initTerminalContainer(el: HTMLElement, back?: () => void, notify
   // Intercept image pastes in the capture phase, before xterm's text-paste
   // handler. Text pastes fall through untouched.
   container.addEventListener("paste", (e) => void handlePaste(e as ClipboardEvent), true);
+
+  // Drag-and-drop of files from the OS (Finder/Explorer). The browser only
+  // gives us the bytes, never the real path, so we ship the bytes to the server
+  // and it types the saved path into the session — same trick as pasteImage.
+  container.addEventListener("dragover", (e) => {
+    if (!dragHasContent(e)) return; // ignore drags with nothing we can insert
+    e.preventDefault(); // required so the "drop" event fires (else the browser opens/navigates)
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    container.classList.add("drag-over");
+  }, true);
+  container.addEventListener("dragleave", (e) => {
+    // Only clear when the pointer actually left the container (dragleave also
+    // fires when moving onto child elements).
+    if (!container.contains(e.relatedTarget as Node | null)) container.classList.remove("drag-over");
+  }, true);
+  container.addEventListener("drop", (e) => void handleDrop(e as DragEvent), true);
+}
+
+// True when the drag carries something we can drop into a terminal: OS files, or
+// plain text / a URL (dragged from a browser, editor, etc.) — like a native
+// terminal, which inserts dragged text as-is and dragged files as their path.
+function dragHasContent(e: DragEvent): boolean {
+  if (!e.dataTransfer) return false;
+  const types = Array.from(e.dataTransfer.types);
+  return types.includes("Files") || types.includes("text/uri-list") || types.includes("text/plain");
+}
+
+async function handleDrop(e: DragEvent): Promise<void> {
+  const dt = e.dataTransfer;
+  if (!dt) return;
+  const hasFiles = Array.from(dt.types).includes("Files");
+  // getData is only valid synchronously inside the drop event — read it now,
+  // before any await. Prefer a real URL (uri-list) over its plain-text echo.
+  const text = hasFiles ? "" : (dt.getData("text/uri-list") || dt.getData("text/plain"));
+  if (!hasFiles && !text) return;
+  e.preventDefault();
+  e.stopPropagation();
+  container.classList.remove("drag-over");
+  const id = activeId; // snapshot: the async loop below must not chase a session switch
+  if (!id) {
+    onNotify?.("먼저 세션을 선택한 뒤 놓아주세요");
+    return;
+  }
+  if (!hasFiles) {
+    send({ t: "input", id, data: text }); // dragged text/link → inserted verbatim (no CR)
+    return;
+  }
+  const files = Array.from(dt.files ?? []);
+  for (const file of files) {
+    if (file.size > MAX_PASTE_BYTES) {
+      onNotify?.(`"${file.name}"이(가) 너무 커서 건너뜀 (최대 ~11MB)`);
+      continue;
+    }
+    send({ t: "dropFile", id, name: file.name, dataB64: await blobToBase64(file) });
+  }
 }
 
 const MIME_EXT: Record<string, string> = {
@@ -109,6 +164,10 @@ function makeEntry(id: string): TermEntry {
     fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace',
     scrollback: 5000,
     cursorBlink: true,
+    // Treat the macOS ⌥ (Option) key as Meta, so Option-combos send the
+    // ESC-prefixed sequences Claude Code's line editor expects (word motion,
+    // word delete, …) instead of typing accented characters.
+    macOptionIsMeta: true,
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -121,21 +180,35 @@ function makeEntry(id: string): TermEntry {
 
   term.onData((data) => send({ t: "input", id, data }));
 
-  // Ctrl+Enter → newline in the prompt (matches the native terminal). The
-  // browser doesn't forward Ctrl+Enter as a usable byte sequence, so we
-  // intercept it and write LF ourselves; returning false stops xterm from
-  // emitting CR (which would submit the prompt).
+  // Keyboard shortcuts that the browser/xterm would otherwise mishandle. Each
+  // intercepted combo writes the exact bytes Claude Code expects and returns
+  // false so xterm doesn't also act on the key. (See 단축키.txt.)
   term.attachCustomKeyEventHandler((ev) => {
     if (ev.type !== "keydown") return true;
-    // Ctrl+Enter → newline (see above).
-    if (ev.key === "Enter" && ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey) {
+
+    // Ctrl+Enter / ⌥+Enter → newline in the prompt (don't submit). The browser
+    // doesn't forward these as a usable byte sequence, so we write LF ourselves.
+    if (ev.key === "Enter" && (ev.ctrlKey || ev.altKey) && !ev.shiftKey && !ev.metaKey) {
       send({ t: "input", id, data: "\n" });
       return false;
     }
-    // Alt+← → hand focus back to the sidebar for keyboard navigation.
-    if (ev.key === "ArrowLeft" && ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey) {
-      ev.preventDefault(); // don't let the browser navigate back
-      onBack?.();
+
+    // ⌥ (Option) word-editing, matching a native macOS terminal. Emit the
+    // canonical readline meta sequences so Claude Code's line editor gets them
+    // regardless of how it parses modified arrows:
+    //   ⌥+←  backward one word   ⌥+→  forward one word   ⌥+⌫  delete prev word
+    if (ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
+      if (ev.key === "ArrowLeft") { ev.preventDefault(); send({ t: "input", id, data: "\x1bb" }); return false; }
+      if (ev.key === "ArrowRight") { ev.preventDefault(); send({ t: "input", id, data: "\x1bf" }); return false; }
+      if (ev.key === "Backspace") { ev.preventDefault(); send({ t: "input", id, data: "\x1b\x7f" }); return false; }
+    }
+
+    // Shift+Arrow → session hop, handled by the global listener in main.ts. Let
+    // it through (return false) so xterm doesn't treat it as a text-selection.
+    if (
+      ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey &&
+      (ev.key === "ArrowUp" || ev.key === "ArrowDown" || ev.key === "ArrowLeft" || ev.key === "ArrowRight")
+    ) {
       return false;
     }
     return true;
