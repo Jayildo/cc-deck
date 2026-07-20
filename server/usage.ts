@@ -17,6 +17,29 @@ interface Credentials {
   claudeAiOauth?: ClaudeAiOauth;
 }
 
+// Claude Code stores its OAuth token in a file on Windows/Linux
+// (~/.claude/.credentials.json) but in the login **Keychain** on macOS, under
+// the service "Claude Code-credentials". Try the file first, then the Keychain,
+// so the account 5h/7d usage resolves on every platform.
+async function readCredentials(): Promise<Credentials | null> {
+  const fromFile = await readJsonSafe<Credentials>(config.paths.credentials);
+  if (fromFile?.claudeAiOauth?.accessToken) return fromFile;
+
+  if (process.platform === "darwin") {
+    try {
+      const raw = execSync('security find-generic-password -s "Claude Code-credentials" -w', {
+        encoding: "utf8",
+        timeout: 5_000,
+      }).trim();
+      const parsed = JSON.parse(raw) as Credentials;
+      if (parsed?.claudeAiOauth?.accessToken) return parsed;
+    } catch {
+      // not in the Keychain, or access denied — fall through to null
+    }
+  }
+  return null;
+}
+
 // ── OAuth response (real shape from probe; defensive variants listed) ─────────
 // Real shape confirmed: five_hour.utilization (number, already-pct), .resets_at (ISO)
 // Defensive support: nested under .rate_limits; pct field named utilization|used_percentage|used
@@ -108,7 +131,7 @@ export function createUsagePoller(
 
   // Source A: OAuth (accurate, includes reset times).
   async function tryOAuth(): Promise<AccountUsage | null> {
-    const creds = await readJsonSafe<Credentials>(config.paths.credentials);
+    const creds = await readCredentials();
     const oauth = creds?.claudeAiOauth;
     if (!oauth?.accessToken) return null;
 

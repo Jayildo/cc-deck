@@ -24,6 +24,45 @@ interface SessionEntry {
   scrollback: string;
   discoveryTimer?: ReturnType<typeof setTimeout>;
   discoveryStopped?: boolean;
+  /** ANSI-stripped tail of recent PTY output, used to detect the permission
+   *  prompt. Reset when the user answers so stale prompt text can't re-trigger. */
+  permClean: string;
+  /** Ignore permission detection until this epoch-ms — a short window after the
+   *  user answers, so the trailing redraw of the box doesn't re-arm the blink. */
+  permSuppressUntil: number;
+}
+
+// Strip ANSI escape / OSC sequences so phrase matching sees plain text.
+const ANSI_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[[\]()#;?]*[0-9;]*[A-Za-z@-~]/g;
+// Size of the plain-text tail we keep for matching. Small enough that a dismissed
+// prompt scrolls out quickly once real output resumes, big enough to hold the box.
+const PERM_TAIL = 2000;
+// Signatures unique to Claude Code's permission prompt. Any ONE match ⇒ the
+// terminal is waiting for the user to approve a tool. Kept as short, stable
+// substrings so word-wrap inside the box rarely splits them. (English — the CLI
+// UI is English regardless of conversation language.)
+const PERMISSION_RE =
+  /Do you want to proceed|Do you want to make this edit|Do you want to create|don['’]t ask again|tell Claude what to do differently/;
+// Structural backup — language-INDEPENDENT. A permission/choice prompt renders a
+// selected numbered menu: "❯ 1. …" followed shortly by "2. …". This survives a
+// future reword of the English prompt text (only the menu shape has to hold), so
+// detection degrades gracefully instead of silently dying. It also matches plain
+// choice menus (AskUserQuestion / plan) — the frontend keeps those labelled as
+// "선택 요청" using the transcript, so the overlap is harmless. (The cursor glyph
+// alone is a common shell prompt char, so we require the "❯ N." + "N." menu pair.)
+// Claude Code renders the selected-row cursor as either ❯ (U+276F) or › (U+203A)
+// depending on font/terminal — accept both, else the AskUserQuestion menu (which
+// uses ›) slips past this backup detector.
+const MENU_RE = /[❯›]\s*\d+\.[\s\S]{1,200}?\r?\n\s*\d+\.\s/;
+
+/** Recompute a session's awaitingPermission from its recent output tail.
+ *  Returns true if the flag flipped (caller should re-broadcast). */
+function refreshPermission(entry: SessionEntry, now: number): boolean {
+  const hit = PERMISSION_RE.test(entry.permClean) || MENU_RE.test(entry.permClean);
+  const next = now >= entry.permSuppressUntil && hit;
+  if (next === !!entry.meta.awaitingPermission) return false;
+  entry.meta.awaitingPermission = next;
+  return true;
 }
 
 /** Trim scrollback to stay within the byte cap, dropping from the front. */
@@ -51,7 +90,18 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
   }
 
   function input(id: string, data: string): void {
-    sessions.get(id)?.terminal.write(data);
+    const entry = sessions.get(id);
+    if (!entry) return;
+    entry.terminal.write(data);
+    // The user is answering (or otherwise interacting): drop the permission blink
+    // immediately, wipe the stale prompt text so it can't re-trigger, and suppress
+    // re-detection briefly to ride out the box's trailing redraw.
+    entry.permClean = "";
+    entry.permSuppressUntil = Date.now() + 700;
+    if (entry.meta.awaitingPermission) {
+      entry.meta.awaitingPermission = false;
+      handlers.onSessions(list());
+    }
   }
 
   function resize(id: string, cols: number, rows: number): void {
@@ -107,9 +157,18 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
     // server (node-pty rethrows from a worker thread, uncatchable here). Via
     // cmd.exe, claude.cmd resolves through PATHEXT and a missing binary degrades
     // to terminal output instead of a crash.
+    // macOS/Linux: launch claude through a LOGIN + INTERACTIVE shell
+    // (`$SHELL -l -i -c claude`) rather than spawning "claude" directly. cc-deck may
+    // run under launchd/systemd, whose parent process carries only a minimal PATH
+    // (/usr/bin:/bin:/usr/sbin:/sbin); spawning the bare binary then fails with
+    // "ioctl(2) failed, EBADF" and the session exits immediately. A login+interactive
+    // shell sources the user's profile (~/.zprofile, ~/.zshrc), restoring the real
+    // PATH (~/.local/bin, Homebrew, …) and any `claude` shell function — mirroring how
+    // the user opens claude in Terminal. If claude is still missing it degrades to a
+    // terminal message instead of crashing the server.
     const isWin = process.platform === "win32";
-    const claudeFile = isWin ? (process.env.COMSPEC ?? "cmd.exe") : "claude";
-    const claudeArgs = isWin ? ["/d", "/s", "/c", "claude"] : [];
+    const claudeFile = isWin ? (process.env.COMSPEC ?? "cmd.exe") : (process.env.SHELL ?? "/bin/zsh");
+    const claudeArgs = isWin ? ["/d", "/s", "/c", "claude"] : ["-l", "-i", "-c", "claude"];
 
     // Clean env: if cc-deck was itself launched from inside a Claude Code session,
     // the inherited CLAUDE_CODE* vars would make the child think it is nested.
@@ -136,13 +195,19 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
       createdAt: spawnTime,
     };
 
-    const entry: SessionEntry = { meta, terminal, scrollback: "" };
+    const entry: SessionEntry = { meta, terminal, scrollback: "", permClean: "", permSuppressUntil: 0 };
     sessions.set(id, entry);
 
     terminal.onData((data: string) => {
       if (entry.meta.status === "starting") entry.meta.status = "active";
       entry.scrollback = trimScrollback(entry.scrollback + data, config.scrollbackBytes);
       handlers.onData(id, data);
+
+      // Permission-prompt detection: the prompt lives only in the PTY stream, so
+      // scan a plain-text tail of recent output. Edge-triggered — only broadcast
+      // when the awaitingPermission flag actually flips.
+      entry.permClean = (entry.permClean + data.replace(ANSI_RE, "")).slice(-PERM_TAIL);
+      if (refreshPermission(entry, Date.now())) handlers.onSessions(list());
     });
 
     terminal.onExit(({ exitCode }) => {

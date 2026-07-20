@@ -4,9 +4,10 @@ import "../style.css";
 import type { ServerMsg, SessionMetrics, SessionMeta } from "../../shared/types";
 import { connect, onMessage, send } from "./ws.js";
 import { initTerminalContainer, write, activate, getActiveId, disposeTerminal, terminalIds, focusTerminal, resetTerminal, setTerminalsTheme } from "./terminal.js";
-import { initSessions, updateSessions, updateSessionMetrics, setSelectedSession, focusSidebar, clearCursor } from "./sessions.js";
+import { initSessions, updateSessions, updateSessionMetrics, setSelectedSession, focusSidebar, clearCursor, siblingSession } from "./sessions.js";
 import { renderUsage } from "./usage.js";
 import { initProjectPicker, updateProjects } from "./projects.js";
+import { initQuickTabs } from "./quicktabs.js";
 import { initReports, setReports, showReport, setReportStatus } from "./reports.js";
 import { fmtNum, shortModel } from "./fmt.js";
 import { THEMES, THEME_ORDER, DEFAULT_THEME, STORAGE_KEY, type ThemeName } from "./themes.js";
@@ -20,6 +21,7 @@ const newBtn = document.getElementById("new-session-btn") as HTMLButtonElement;
 const newForm = document.getElementById("new-session-form") as HTMLElement;
 const cwdInput = document.getElementById("cwd-input") as HTMLInputElement;
 const pickerEl = document.getElementById("project-picker") as HTMLElement;
+const projectTabsEl = document.getElementById("project-tabs") as HTMLElement;
 const openBtn = document.getElementById("open-session-btn") as HTMLButtonElement;
 const cancelBtn = document.getElementById("cancel-session-btn") as HTMLButtonElement;
 const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
@@ -63,6 +65,25 @@ function enterSession(id: string): void {
   clearCursor();
   focusTerminal();
 }
+
+// Global shortcut: Shift+Arrow hops straight to the previous/next session and
+// dives into its terminal — no sidebar detour. ↑/← = previous, ↓/→ = next
+// (the list is vertical, so both orientations map to the same move). Skip when
+// another modifier is held or focus is in a plain text input (e.g. the new-
+// session cwd field), so Shift+Arrow still selects text there.
+document.addEventListener("keydown", (e) => {
+  if (!e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+  const target = e.target as HTMLElement | null;
+  if (target?.tagName === "INPUT") return; // xterm uses a <textarea>, so this only guards form inputs
+  let delta = 0;
+  if (e.key === "ArrowUp" || e.key === "ArrowLeft") delta = -1;
+  else if (e.key === "ArrowDown" || e.key === "ArrowRight") delta = 1;
+  else return;
+  const id = siblingSession(delta);
+  if (!id || id === getActiveId()) return; // already at the edge → nothing to do
+  e.preventDefault();
+  enterSession(id);
+});
 
 // When sessions disappear from the list (closed via ×), dispose their terminals;
 // if the active session is the one that went away, reset the pane to empty.
@@ -235,6 +256,13 @@ void (async () => {
   initProjectPicker(pickerEl, (path) => {
     send({ t: "open", cwd: path });
     newForm.classList.add("hidden");
+  });
+  // 상단 고정 프로젝트 탭 — 대표님 `cc` 셸 메뉴를 옮긴 것.
+  // 탭 클릭 = 그 폴더에서 새 세션 열기 + (cc 처럼) "/start" 클립보드 복사.
+  initQuickTabs(projectTabsEl, (p) => {
+    send({ t: "open", cwd: p.path, title: `${p.emoji} ${p.label}` });
+    navigator.clipboard?.writeText("/start").catch(() => {});
+    showToast(`${p.emoji} ${p.label} 세션 여는 중 · 「/start」 복사됨 (⌘V + Enter)`);
   });
   initReports();
   renderThemeSwitcher();

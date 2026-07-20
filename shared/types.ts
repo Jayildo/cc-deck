@@ -33,6 +33,11 @@ export interface SessionMeta {
   status: SessionStatus;
   /** epoch ms */
   createdAt: number;
+  /** True while the terminal is showing a permission prompt ("Do you want to
+   *  proceed?"). Detected from the PTY stream, not the transcript — a permission
+   *  request never reaches the .jsonl. Cleared when the user answers (any input).
+   *  Surfaced in the sidebar as a distinct "승인 대기" attention state. */
+  awaitingPermission?: boolean;
 }
 
 export interface TokenBucket {
@@ -119,6 +124,7 @@ export type ClientMsg =
   | { t: "attach"; id: string } // subscribe to a session's pty stream (server replays scrollback)
   | { t: "input"; id: string; data: string }
   | { t: "pasteImage"; id: string; ext: string; dataB64: string } // clipboard image → saved server-side, its path typed into the session
+  | { t: "dropFile"; id: string; name: string; dataB64: string } // OS drag-and-drop → saved server-side (keeping its name), its path typed into the session
   | { t: "resize"; id: string; cols: number; rows: number }
   | { t: "close"; id: string }
   | { t: "refreshUsage" }
@@ -178,6 +184,10 @@ export interface MetricsEngine {
    *  tailer once meta.claudeSessionId is known. */
   track(meta: SessionMeta): void;
   untrack(id: string): void;
+  /** Heartbeat: the session emitted PTY output just now. Lets the engine tell a
+   *  genuinely-finished turn from one still waiting on a background agent/
+   *  workflow (whose spinner keeps the PTY alive but writes no transcript). */
+  notePtyOutput(id: string): void;
   get(id: string): SessionMetrics | undefined;
   getAll(): SessionMetrics[];
   dispose(): void;

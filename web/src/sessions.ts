@@ -67,6 +67,19 @@ function moveCursor(delta: number): void {
   scrollCursorIntoView();
 }
 
+/**
+ * Return the session id `delta` steps from the currently selected one (clamped
+ * at both ends). Used by the global Shift+Arrow shortcut to hop between sessions
+ * without going back to the sidebar first.
+ */
+export function siblingSession(delta: number): string | null {
+  if (!sessions.length) return null;
+  const cur = sessions.findIndex((s) => s.id === selectedId);
+  const base = cur < 0 ? 0 : cur;
+  const next = Math.max(0, Math.min(sessions.length - 1, base + delta));
+  return sessions[next]?.id ?? null;
+}
+
 /** Enter keyboard-nav mode: focus the list and put the cursor on the active row. */
 export function focusSidebar(): void {
   cursorId =
@@ -119,6 +132,14 @@ const ACTIVITY: Record<string, { cls: string; label: string }> = {
 function activityView(s: SessionMeta, m: SessionMetrics | undefined): { cls: string; label: string } {
   if (s.status === "exited") return { cls: "act-exited", label: "종료" };
   const a = m?.activity;
+  // A menu on the terminal (awaitingPermission, PTY-derived) is the most urgent
+  // user gate. But the structural detector also fires on ordinary choice prompts;
+  // when the transcript already knows it's a choice (AskUserQuestion/plan), keep
+  // the precise blue "선택 요청" — otherwise it's a permission prompt → red.
+  if (s.awaitingPermission) {
+    if (a === "awaiting-choice") return ACTIVITY["awaiting-choice"]!;
+    return { cls: "act-permission", label: "승인 대기" };
+  }
   if (a && ACTIVITY[a]) return ACTIVITY[a]!;
   return { cls: "act-idle", label: "대기" }; // starting / before the first prompt
 }
@@ -153,8 +174,20 @@ function buildRow(s: SessionMeta): HTMLElement {
   const isSelected = s.id === selectedId;
   const isCursor = s.id === cursorId;
 
+  // Mark sessions that need the user so the row blinks for attention until
+  // selected: permission ("승인 대기", amber) · choice ("선택 요청", blue) · finished
+  // ("완료", green). Working sessions never blink. (see .row-* in style.css)
+  const attnClass =
+    act.cls === "act-permission"
+      ? " row-permission"
+      : act.cls === "act-done"
+        ? " row-done"
+        : act.cls === "act-choice"
+          ? " row-choice"
+          : "";
   const el = document.createElement("div");
-  el.className = `session-row${isSelected ? " selected" : ""}${isCursor ? " cursor" : ""}`;
+  el.className =
+    `session-row${isSelected ? " selected" : ""}${isCursor ? " cursor" : ""}${attnClass}`;
   el.setAttribute("data-sid", s.id);
   el.innerHTML = `
     <div class="row-header">

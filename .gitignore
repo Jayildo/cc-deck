@@ -21,3 +21,6 @@ web/dist/
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# Private, machine-local pinned project list (real paths/names stay off the repo).
+web/src/quicktabs.local.ts

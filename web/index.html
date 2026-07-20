@@ -42,6 +42,9 @@
         <button id="refresh-btn" title="Refresh usage">↻</button>
       </header>
 
+      <!-- Pinned project quick-launch tabs (mirrors the `cc` shell menu) ───── -->
+      <nav id="project-tabs" aria-label="프로젝트 바로가기"></nav>
+
       <!-- Body ────────────────────────────────────────────────────────────── -->
       <div id="layout">
         <!-- Sidebar: session list ─────────────────────────────────────────── -->
@@ -57,25 +60,39 @@
           </div>
           <div id="session-list"></div>
 
-          <!-- Keyboard shortcuts (always-on legend) ─────────────────────── -->
-          <div id="shortcuts-legend" aria-label="키보드 단축키">
-            <div class="legend-title">단축키</div>
-            <ul>
-              <li><span class="keys"><kbd>↑</kbd><kbd>↓</kbd></span><span class="desc">세션 이동</span></li>
-              <li><span class="keys"><kbd>⏎</kbd></span><span class="desc">세션 열기</span></li>
-              <li><span class="keys"><kbd>Alt</kbd><kbd>←</kbd></span><span class="desc">세션목록 복귀</span></li>
-              <li><span class="keys"><kbd>Del</kbd></span><span class="desc">세션 닫기</span></li>
-              <li><span class="keys"><kbd>Ctrl</kbd><kbd>U</kbd></span><span class="desc">입력줄 비우기</span></li>
-              <li><span class="keys"><kbd>Ctrl</kbd><kbd>⏎</kbd></span><span class="desc">줄바꿈(제출 안 함)</span></li>
-            </ul>
-          </div>
+          <!-- Shortcut cheat-sheet (from 단축키.txt) — always visible while working.
+               Session-list rows (⏎/Del) reflect main's list-scoped keybindings in
+               web/src/sessions.ts; ⇧←/→ is the global session hop (web/src/main.ts). -->
+          <details id="shortcuts-cheat" open>
+            <summary>⌨ 단축키</summary>
+            <dl>
+              <dt>/effort</dt><dd>사고 강도 조절</dd>
+              <dt>/plan</dt><dd>플랜 모드 (계획)</dd>
+              <dt>⇧ Tab</dt><dd>모드 전환 (일반·자동수락·플랜)</dd>
+              <dt class="cheat-gap">⇧ ←/→</dt><dd class="cheat-gap">세션 이동</dd>
+              <dt>⏎</dt><dd>세션 열기 (목록 포커스)</dd>
+              <dt>Del</dt><dd>세션 닫기 (목록 포커스)</dd>
+              <dt>⌥ ←/→</dt><dd>한 단어씩 점프</dd>
+              <dt>⌥ ⌫</dt><dd>앞 단어 삭제</dd>
+              <dt>⌃ U</dt><dd>줄 전체 지우기</dd>
+              <dt>⌥ ⏎</dt><dd>줄바꿈 (전송 안 됨)</dd>
+              <dt>↑</dt><dd>이전 프롬프트</dd>
+              <dt>Esc</dt><dd>작업 중단</dd>
+              <dt>Esc Esc</dt><dd>이전 메시지 수정</dd>
+              <dt>#</dt><dd>규칙/메모리 저장</dd>
+              <dt>파일 끌어놓기</dt><dd>경로 자동 입력</dd>
+            </dl>
+          </details>
         </aside>
 
         <!-- Main: terminal + metrics strip ───────────────────────────────── -->
         <main id="main">
           <div id="terminal-container">
             <div id="terminal-wrap"></div>
-            <div id="empty-state">Select or open a session to begin</div>
+            <div id="empty-state">
+              <div class="empty-title">Select or open a session to begin</div>
+              <p class="start-hint">세션 시작하면 <code>/start</code>로 이전 작업내역을 불러오세요</p>
+            </div>
           </div>
           <div id="metrics-strip" class="hidden">
             <span id="m-model">—</span>

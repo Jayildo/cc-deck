@@ -6,7 +6,7 @@ import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 
 import { config } from "./config.js";
-import { ensureDeckDir } from "./util.js";
+import { ensureDeckDir, claudeVersionWarning } from "./util.js";
 import { AUTH_TOKEN, isAllowedOrigin, tokenFromQuery, timingSafeEqual } from "./auth.js";
 import { createSessionManager } from "./sessions.js";
 import { createMetricsEngine } from "./metrics.js";
@@ -26,6 +26,15 @@ interface Client {
 }
 const clients = new Set<Client>();
 
+// If the installed Claude Code differs from the version the permission-prompt
+// detector was verified against, we warn the user (a toast) so a silently-rotted
+// detector never reads as "cc-deck is broken". Computed once, off the boot path
+// (claude --version can take ~1s through a login shell), then pushed to clients.
+let claudeWarn: string | null = null;
+
+// Monotonic suffix so same-name files dropped in the same millisecond don't collide.
+let dropSeq = 0;
+
 function broadcast(msg: ServerMsg): void {
   for (const c of clients) c.send(msg);
 }
@@ -39,7 +48,10 @@ const metrics = createMetricsEngine({
 });
 
 const sessions = createSessionManager({
-  onData: (id, data) => sendToAttached(id, { t: "pty", id, data }),
+  onData: (id, data) => {
+    metrics.notePtyOutput(id); // heartbeat: distinguishes "done" from background-wait
+    sendToAttached(id, { t: "pty", id, data });
+  },
   onSessions: (list) => {
     for (const meta of list) metrics.track(meta);
     broadcast({ t: "sessions", sessions: list });
@@ -49,6 +61,20 @@ const sessions = createSessionManager({
     broadcast({ t: "exit", id, code });
   },
 });
+
+// Compute the Claude Code version warning once, off the boot path so a slow
+// `claude --version` never delays server start. Push to anyone already connected.
+setTimeout(() => {
+  try {
+    claudeWarn = claudeVersionWarning();
+    if (claudeWarn) {
+      console.warn("[cc-deck]", claudeWarn);
+      broadcast({ t: "error", message: claudeWarn });
+    }
+  } catch (err) {
+    console.error("[cc-deck] version check failed (non-fatal):", err);
+  }
+}, 100);
 
 const usage = createUsagePoller({
   onUsage: (u) => broadcast({ t: "usage", usage: u }),
@@ -137,6 +163,8 @@ app.get("/ws", { websocket: true }, async (socket, req) => {
     usage: usage.get(),
     projects: await projects.lists(),
   });
+  // Surface the CLI-version warning (if any) as a toast on every page load.
+  if (claudeWarn) client.send({ t: "error", message: claudeWarn });
 
   socket.on("message", async (raw: Buffer) => {
     let msg: ClientMsg;
@@ -181,6 +209,21 @@ app.get("/ws", { websocket: true }, async (socket, req) => {
           sessions.input(msg.id, file.replace(/\\/g, "/") + " ");
           break;
         }
+        case "dropFile": {
+          // OS drag-and-drop: the browser hands us the file's bytes but never
+          // its real path (security), so — like pasteImage — we save the bytes
+          // and type the saved path into the session. We keep the original file
+          // name (readable for Claude) and add a counter so concurrent drops of
+          // the same name don't clobber each other.
+          const raw = path.basename(msg.name).replace(/[^\w.\-]+/g, "_") || "file";
+          const ext = path.extname(raw);
+          const stem = ext ? raw.slice(0, -ext.length) : raw;
+          await fsp.mkdir(config.paths.pasteDir, { recursive: true });
+          const file = path.join(config.paths.pasteDir, `${stem}-${Date.now()}-${dropSeq++}${ext}`);
+          await fsp.writeFile(file, Buffer.from(msg.dataB64, "base64"));
+          sessions.input(msg.id, file.replace(/\\/g, "/") + " ");
+          break;
+        }
         case "resize":
           sessions.resize(msg.id, msg.cols, msg.rows);
           break;
@@ -220,6 +263,34 @@ app.get("/ws", { websocket: true }, async (socket, req) => {
 
   socket.on("close", () => clients.delete(client));
 });
+
+// Pasted/dropped files pile up in pasteDir over time. Sweep anything older than
+// a week — the path was already typed into a session long ago, so old copies are
+// dead weight. Runs at startup and once a day after.
+const PASTE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+async function cleanupPasteDir(): Promise<void> {
+  try {
+    const dir = config.paths.pasteDir;
+    const names = await fsp.readdir(dir).catch(() => [] as string[]);
+    const cutoff = Date.now() - PASTE_TTL_MS;
+    await Promise.all(
+      names.map(async (name) => {
+        const p = path.join(dir, name);
+        try {
+          const st = await fsp.stat(p);
+          if (st.isFile() && st.mtimeMs < cutoff) await fsp.rm(p, { force: true });
+        } catch {
+          // file vanished / race — ignore
+        }
+      }),
+    );
+  } catch {
+    // dir missing or unreadable — nothing to clean
+  }
+}
+void cleanupPasteDir();
+const pasteCleanupTimer = setInterval(() => void cleanupPasteDir(), 24 * 60 * 60 * 1000);
+pasteCleanupTimer.unref?.(); // don't keep the process alive just for the sweep
 
 // Serve the built frontend in production (web/dist). In dev, Vite serves it.
 if (fs.existsSync(config.paths.webDist)) {
