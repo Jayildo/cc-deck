@@ -8,6 +8,11 @@ let sessions: SessionMeta[] = [];
 const metricsMap = new Map<string, SessionMetrics>();
 let selectedId: string | null = null;
 let cursorId: string | null = null; // keyboard-nav highlight (separate from selected)
+// Sessions whose CURRENT attention state (완료 / 응답 필요 / 승인 대기) the user has
+// already seen — value = the acknowledged activity. A row blinks for attention only
+// until it's acknowledged (selected once), and re-arms when the session leaves that
+// state (a new working turn) so a genuinely new event blinks again.
+const acked = new Map<string, string>();
 let listEl: HTMLElement;
 let onSelect: SelectCb;
 let onEnter: SelectCb;
@@ -98,16 +103,29 @@ export function clearCursor(): void {
 
 export function updateSessions(list: SessionMeta[]): void {
   sessions = list;
+  // Drop acknowledgements for sessions that no longer exist so the map can't grow
+  // unbounded across a long-lived dashboard.
+  const live = new Set(list.map((s) => s.id));
+  for (const id of acked.keys()) if (!live.has(id)) acked.delete(id);
   renderAll();
 }
 
 export function updateSessionMetrics(m: SessionMetrics): void {
   metricsMap.set(m.id, m);
+  // Blinks are reserved for attention events the user hasn't seen yet. Re-arm when
+  // the session leaves its attention state (a new working turn) so its NEXT
+  // 완료/응답/승인 alerts again; and auto-acknowledge the state on the row the user
+  // is already viewing (selected), so it won't blink after they navigate away.
+  const s = sessions.find((x) => x.id === m.id);
+  const st = s ? attnStateOf(s, m) : null;
+  if (st === null) acked.delete(m.id);
+  else if (m.id === selectedId) acked.set(m.id, st);
   patchRow(m.id);
 }
 
 export function setSelectedSession(id: string): void {
   selectedId = id;
+  acknowledge(id); // seeing a session clears its attention blink until a new event
   renderAll();
 }
 
@@ -144,6 +162,35 @@ function activityView(s: SessionMeta, m: SessionMetrics | undefined): { cls: str
   return { cls: "act-idle", label: "대기" }; // starting / before the first prompt
 }
 
+// The attention state a row blinks for (완료 / 응답 필요 / 승인 대기), or null when the
+// session isn't asking for the user — same mapping the badge uses.
+function attnFromCls(cls: string): string | null {
+  switch (cls) {
+    case "act-permission":
+      return "permission";
+    case "act-done":
+      return "done";
+    case "act-choice":
+      return "awaiting-choice";
+    default:
+      return null;
+  }
+}
+
+function attnStateOf(s: SessionMeta, m: SessionMetrics | undefined): string | null {
+  return attnFromCls(activityView(s, m).cls);
+}
+
+// Mark a session's current attention state as seen, so its row stops blinking even
+// after you navigate away. No-op when the session isn't in an attention state.
+function acknowledge(id: string): void {
+  const s = sessions.find((x) => x.id === id);
+  if (!s) return;
+  const st = attnStateOf(s, metricsMap.get(id));
+  if (st) acked.set(id, st);
+  else acked.delete(id);
+}
+
 function renderAll(): void {
   listEl.innerHTML = "";
   for (const s of sessions) {
@@ -174,17 +221,23 @@ function buildRow(s: SessionMeta): HTMLElement {
   const isSelected = s.id === selectedId;
   const isCursor = s.id === cursorId;
 
-  // Mark sessions that need the user so the row blinks for attention until
-  // selected: permission ("승인 대기", amber) · choice ("선택 요청", blue) · finished
-  // ("완료", green). Working sessions never blink. (see .row-* in style.css)
-  const attnClass =
-    act.cls === "act-permission"
+  // Mark sessions that need the user so the row blinks for attention until it's
+  // acknowledged: choice ("응답 필요", blue) · finished ("완료", green). The blink stops
+  // once the row has been selected once (`acked`) and stays off until a new
+  // attention event; working sessions never blink. A permission block ("승인 대기",
+  // red) is EXEMPT — the session is halted until the user acts, so it keeps blinking
+  // until it clears (never silenced by acknowledgement). The activity badge itself
+  // is unaffected — only the row-level blink. (see .row-* CSS)
+  const attn = attnFromCls(act.cls);
+  const blink =
+    attn !== null && !isSelected && (attn === "permission" || acked.get(s.id) !== attn);
+  const attnClass = !blink
+    ? ""
+    : attn === "permission"
       ? " row-permission"
-      : act.cls === "act-done"
+      : attn === "done"
         ? " row-done"
-        : act.cls === "act-choice"
-          ? " row-choice"
-          : "";
+        : " row-choice";
   const el = document.createElement("div");
   el.className =
     `session-row${isSelected ? " selected" : ""}${isCursor ? " cursor" : ""}${attnClass}`;
