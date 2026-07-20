@@ -405,6 +405,19 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
             s.byteOffset = 0;
             s.pendingBuf = Buffer.alloc(0); // new file → drop any half-read tail
             s.seen.clear(); // new file → new message ids; keep cumulative totals
+            // The prior turn's live activity belongs to the OLD transcript; a
+            // /clear-rolled session must not inherit it. Reset to a clean idle
+            // baseline (and drop any deferred terminal) so a stale "working" /
+            // "awaiting-choice" / pending-"done" can't ride across the roll. (The
+            // brief pre-first-prompt window still self-heals at the next prompt via
+            // the user-prompt → working handler; there is no /clear event to hook.)
+            if (s.settleTimer !== null) {
+              clearTimeout(s.settleTimer);
+              s.settleTimer = null;
+            }
+            s.pendingTerminal = null;
+            s.metrics.activity = undefined;
+            s.metrics.progress = "idle";
           }
           bindFile(s, fp);
         }
