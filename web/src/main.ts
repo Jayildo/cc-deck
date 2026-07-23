@@ -92,6 +92,9 @@ function reconcileClosed(list: SessionMeta[]): void {
   for (const id of terminalIds()) {
     if (!live.has(id)) disposeTerminal(id); // clears activeId if it was active
   }
+  // Drop cached metrics for gone sessions so this map doesn't grow unbounded over a
+  // long-lived dashboard (mirrors the acked/metricsMap pruning in sessions.ts).
+  for (const id of latestMetrics.keys()) if (!live.has(id)) latestMetrics.delete(id);
   if (!getActiveId()) {
     emptyState.style.display = "";
     metricsStrip.classList.add("hidden");
