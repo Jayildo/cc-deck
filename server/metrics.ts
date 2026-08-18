@@ -47,9 +47,17 @@ interface TRecord {
 const CHOICE_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 
 // stop_reason values that mean the turn is genuinely OVER (user's turn now).
-// Anything else ("tool_use", "pause_turn", null while still streaming) means
-// Claude is still working — so we must NOT flip the row to "done".
-const DONE_REASONS = new Set(["end_turn", "stop_sequence", "max_tokens"]);
+// "refusal" (safety classifier, HTTP 200) and "model_context_window_exceeded"
+// are terminal too — without them the row would stay "working" until the next
+// prompt. Anything else ("tool_use", "pause_turn", null while still streaming)
+// means Claude is still working — so we must NOT flip the row to "done".
+const DONE_REASONS = new Set([
+  "end_turn",
+  "stop_sequence",
+  "max_tokens",
+  "refusal",
+  "model_context_window_exceeded",
+]);
 
 // A main-chain turn can hit a terminal stop_reason (end_turn) while the session
 // is STILL working — e.g. it launched a background agent or a dynamic workflow
@@ -354,28 +362,57 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
     // Watch for appends; read only the newly-written bytes each time
     const watcher = chokidarWatch(filePath, { ignoreInitial: true, persistent: false });
     watcher.on("change", () => {
+      let fd = -1;
       try {
-        const fd = fs.openSync(filePath, "r");
+        fd = fs.openSync(filePath, "r");
         const { size } = fs.fstatSync(fd);
-        if (size <= s.byteOffset) {
-          fs.closeSync(fd);
-          return;
+        if (size < s.byteOffset) {
+          // File shrank / was rewritten → resync from the top. Keep `seen` so
+          // re-read message ids don't double-count tokens.
+          s.byteOffset = 0;
+          s.pendingBuf = Buffer.alloc(0);
         }
+        if (size === s.byteOffset) return;
         const len = size - s.byteOffset;
         const buf = Buffer.allocUnsafe(len);
         fs.readSync(fd, buf, 0, len, s.byteOffset);
-        fs.closeSync(fd);
         s.byteOffset = size;
         feedBytes(s, buf);
       } catch {
-        // File disappeared or permission error — skip silently
+        // File disappeared or transient permission error — skip silently
+      } finally {
+        // Always release the fd: a leaked handle pins the transcript open on
+        // Windows and can block Claude Code's own rename/rotate.
+        if (fd >= 0) {
+          try {
+            fs.closeSync(fd);
+          } catch {
+            /* noop */
+          }
+        }
       }
     });
     s.watcher = watcher;
   }
 
+  function untrack(id: string): void {
+    const s = states.get(id);
+    if (!s) return;
+    if (s.debounceTimer !== null) clearTimeout(s.debounceTimer);
+    if (s.settleTimer !== null) clearTimeout(s.settleTimer);
+    s.watcher?.close().catch(() => undefined);
+    states.delete(id);
+  }
+
   return {
     track(meta: SessionMeta): void {
+      // Exited sessions stay in the list for visibility only — never (re)build
+      // tailer state for them. onExit already untracked; the onSessions broadcast
+      // that follows would otherwise re-track and leak a watcher + full re-parse.
+      if (meta.status === "exited") {
+        untrack(meta.id);
+        return;
+      }
       let s = states.get(meta.id);
       if (!s) {
         s = {
@@ -453,14 +490,7 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
       }
     },
 
-    untrack(id: string): void {
-      const s = states.get(id);
-      if (!s) return;
-      if (s.debounceTimer !== null) clearTimeout(s.debounceTimer);
-      if (s.settleTimer !== null) clearTimeout(s.settleTimer);
-      s.watcher?.close().catch(() => undefined);
-      states.delete(id);
-    },
+    untrack,
 
     get(id: string): SessionMetrics | undefined {
       const s = states.get(id);
@@ -469,6 +499,10 @@ export function createMetricsEngine(handlers: MetricsEngineHandlers): MetricsEng
 
     getAll(): SessionMetrics[] {
       return Array.from(states.values(), snapshot);
+    },
+
+    ids(): string[] {
+      return [...states.keys()];
     },
 
     dispose(): void {

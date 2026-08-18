@@ -17,6 +17,7 @@ const TEE_SH = path.join(CC_DECK_DIR, "statusline-tee.sh");
 
 // Convert Windows path to Git-Bash /c/... form — mirrors install-statusline-tee.mjs
 // so TEE_CMD here is byte-identical to what install wrote into settings.json.
+/** @param {string} p */
 function toGitBash(p) {
   return p.replace(/^([A-Za-z]):/, (_, d) => `/${d.toLowerCase()}`).replaceAll("\\", "/");
 }
@@ -25,6 +26,7 @@ const TEE_CMD = `bash "${toGitBash(TEE_SH)}"`;
 // ── Determine the original command ───────────────────────────────────────────
 let originalCmd = null;
 let existed = true; // did the user have ANY statusLine config before install?
+let hadType = true; // did that statusLine already carry a `type` (install forces "command")?
 let source = null;
 
 // Prefer the dedicated save (command string + whether statusLine existed before install).
@@ -33,6 +35,7 @@ try {
   if (typeof saved?.command === "string") {
     originalCmd = saved.command;
     existed = saved.existed ?? true; // older backups predate this field — assume it existed
+    hadType = saved.hadType ?? true; // ditto — keep the type rather than risk stripping the user's own
     source = ORIGINAL_JSON;
   }
 } catch {
@@ -66,7 +69,7 @@ let settings;
 try {
   settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8"));
 } catch (err) {
-  console.error(`ERROR: Cannot read ${SETTINGS_PATH}: ${err.message}`);
+  console.error(`ERROR: Cannot read ${SETTINGS_PATH}: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 }
 
@@ -94,6 +97,9 @@ if (!existed) {
 } else {
   settings.statusLine.command = originalCmd;
 }
+// Install injected `type: "command"` into a statusLine that had none — drop it
+// again so the restored object round-trips exactly.
+if (existed && settings.statusLine && !hadType) delete settings.statusLine.type;
 fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2), "utf8");
 
 console.log("Done.");

@@ -1,7 +1,8 @@
 # cc-deck on macOS
 
 From-zero setup for running cc-deck on macOS. Everything below is local — cc-deck
-runs entirely on your machine, bound to `127.0.0.1`.
+runs entirely on your machine, loopback-only (localhost / 127.0.0.1 — non-loopback
+peers are rejected).
 
 ## Prerequisites
 
@@ -14,7 +15,8 @@ runs entirely on your machine, bound to `127.0.0.1`.
   once and complete login. cc-deck reads:
   - `~/.claude/sessions/*.json` (your recent sessions)
   - `~/.claude/projects/**/<id>.jsonl` (transcripts, for tokens + context %)
-  - `~/.claude/.credentials.json` (OAuth token, for account 5h/weekly usage)
+  - the OAuth token, from `~/.claude/.credentials.json` if present, otherwise the
+    login-Keychain item "Claude Code-credentials" (for account 5h/weekly usage)
 
 ## Install
 
@@ -78,9 +80,25 @@ The autostart server doesn't hot-reload. After pulling or editing server code:
 npm run restart
 ```
 
-This stops whatever's listening on the port (`lsof` + `kill`), then relaunches
-it — via `launchctl kickstart` if the LaunchAgent is installed, otherwise by
-spawning the server detached.
+This stops every listener on the port (`lsof -ti tcp:PORT -sTCP:LISTEN` + `kill`;
+the port comes from `CC_DECK_PORT` or the launcher `install:autostart` wrote), then
+relaunches it — via `launchctl kickstart` if the LaunchAgent is installed,
+otherwise by spawning the server detached.
+
+**Restart from Terminal, not from a session inside cc-deck — it closes every
+hosted session.** Frontend-only changes need just `npm run build` + a browser
+reload.
+
+## Pinned project tabs (optional)
+
+The tab row across the top opens a fresh session in a pinned folder. Keep your
+own list out of git:
+
+```bash
+cp web/src/quicktabs.local.example.ts web/src/quicktabs.local.ts   # git-ignored
+# edit paths/labels, then
+npm run build
+```
 
 ## Statusline tee (optional)
 
@@ -104,10 +122,12 @@ through to it unchanged.
   architecture or Node version. Confirm `node -v` is 24+, then
   `rm -rf node_modules && npm install`. If it tries to compile, run
   `xcode-select --install` first.
-- **Account usage shows "reauth needed" / sessions list is empty** — you're not
-  logged into Claude Code on this machine yet. Run `claude` in a terminal and
-  complete login; cc-deck reads `~/.claude/.credentials.json` directly and does
-  not manage auth itself.
+- **Account usage shows "reauth needed" / sessions list is empty** — either
+  you're not logged into Claude Code on this machine yet, or the Keychain item
+  "Claude Code-credentials" can't be read by the server. Run `claude` in a
+  terminal and complete login; if macOS prompts for Keychain access when cc-deck
+  runs under launchd, allow it. cc-deck only reads the token (file, then
+  Keychain) and never manages auth itself.
 - **`launchctl bootstrap` fails during `install:autostart`** — usually means a
   stale copy is already loaded. The installer already runs `bootout` first, but
   if it still fails, run manually: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.ccdeck.dashboard.plist`,

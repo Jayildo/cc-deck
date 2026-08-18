@@ -6,7 +6,7 @@ import { config } from "./config.js";
 import { projectLabel } from "./util.js";
 
 const REPORTS_DIR = path.join(config.paths.deckDir, "reports");
-const SUMMARY_MODEL = "claude-sonnet-4-6";
+const SUMMARY_MODEL = "sonnet"; // CLI alias → latest Sonnet; decoupled from dated model ids / retirement
 const MAX_PROJECTS = 10;
 
 interface ProjectDay {
@@ -205,9 +205,18 @@ function summarize(prompt: string): Promise<string> {
   return new Promise((resolve) => {
     let out = "";
     let err = "";
+    // Same env scrub as sessions.ts: inherited CLAUDECODE / CLAUDE_CODE* (present
+    // when cc-deck itself was launched from inside a Claude Code session) would
+    // make the child think it is nested.
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v === undefined || k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE")) continue;
+      env[k] = v;
+    }
     const child = spawn("claude", ["-p", "--model", SUMMARY_MODEL, "--output-format", "text"], {
       shell: true,
       windowsHide: true,
+      env,
       cwd: config.paths.deckDir, // neutral cwd → no heavy project context
       // On POSIX, shell:true runs the command via `/bin/sh -c`, so child.pid is
       // the shell's pid, not the actual `claude` process it execs. detached:true

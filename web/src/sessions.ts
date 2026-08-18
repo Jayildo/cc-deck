@@ -1,4 +1,4 @@
-import type { SessionMeta, SessionMetrics } from "../../shared/types";
+import type { SessionMeta, SessionMetrics, SessionStatus } from "../../shared/types";
 import { fmtNum } from "./fmt.js";
 import { send } from "./ws.js";
 
@@ -139,10 +139,9 @@ export function setSelectedSession(id: string): void {
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
-const DOT_CLASS: Record<string, string> = {
+const DOT_CLASS: Record<SessionStatus, string> = {
   starting: "dot dot-starting",
   active: "dot dot-active",
-  idle: "dot dot-idle",
   exited: "dot dot-exited",
 };
 

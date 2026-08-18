@@ -247,6 +247,9 @@ input:focus-visible,
 .badge-gray  { background: var(--surface2); color: var(--muted); }
 .badge-amber { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber); }
 .badge-red   { background: color-mix(in srgb, var(--red) 16%, transparent);   color: var(--red); }
+#conn-badge.hidden { display: none; }
+/* Dim the terminal pane while the WS is down — keystrokes go nowhere until reconnect. */
+body.disconnected #terminal-wrap { opacity: 0.5; }
 
 #refresh-btn {
   background: none;
@@ -548,7 +551,6 @@ input:focus-visible,
 }
 .dot-starting { background: var(--amber); animation: pulse 1.1s ease-in-out infinite; }
 .dot-active   { background: var(--green); }
-.dot-idle     { background: var(--blue); }
 .dot-exited   { background: var(--border); }
 
 @keyframes pulse {
@@ -684,6 +686,14 @@ input:focus-visible,
   }
   .session-row.row-permission:not(.selected) .act-permission {
     animation: none;
+  }
+  /* LED pulses too — colour/glow still convey the state. */
+  .dot-starting,
+  .act-working .act-led,
+  .act-choice .act-led,
+  .act-permission .act-led {
+    animation: none;
+    opacity: 1;
   }
 }
 /* idle (pre-first-prompt) / exited — muted */
@@ -876,6 +886,10 @@ input:focus-visible,
 @keyframes slide-in {
   from { transform: translateX(16px); opacity: 0; }
   to   { transform: translateX(0);    opacity: 1; }
+}
+/* Must follow .toast above — same specificity, so source order decides. */
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
 }
 
 /* ── Daily report ────────────────────────────────────────────────────────── */

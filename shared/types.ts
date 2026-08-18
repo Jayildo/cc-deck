@@ -14,9 +14,8 @@
 // ── Core entities ────────────────────────────────────────────────────────────
 
 export type SessionStatus =
-  | "starting" // pty spawned, claudeSessionId not yet discovered
-  | "active" // transcript appended within the last few seconds
-  | "idle" // alive but quiet
+  | "starting" // pty spawned, no output yet
+  | "active" // pty produced output (process is up)
   | "exited"; // pty process gone
 
 export interface SessionMeta {
@@ -137,7 +136,16 @@ export type ClientMsg =
 
 /** Messages the server pushes to the browser. */
 export type ServerMsg =
-  | { t: "hello"; version: string; sessions: SessionMeta[]; usage: AccountUsage; projects: ProjectLists }
+  | {
+      t: "hello";
+      version: string;
+      sessions: SessionMeta[];
+      /** Snapshot of live metrics so a reloaded/reconnected tab shows activity /
+       *  ctx-% / tokens without waiting for the next transcript change. */
+      metrics?: SessionMetrics[];
+      usage: AccountUsage;
+      projects: ProjectLists;
+    }
   | { t: "sessions"; sessions: SessionMeta[] }
   | { t: "opened"; id: string } // ack to the client that sent "open" — auto-select this session
 
@@ -190,6 +198,8 @@ export interface MetricsEngine {
   notePtyOutput(id: string): void;
   get(id: string): SessionMetrics | undefined;
   getAll(): SessionMetrics[];
+  /** Tracked session ids (cheap — no snapshot). */
+  ids(): string[];
   dispose(): void;
 }
 

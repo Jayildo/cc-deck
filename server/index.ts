@@ -53,7 +53,13 @@ const sessions = createSessionManager({
     sendToAttached(id, { t: "pty", id, data });
   },
   onSessions: (list) => {
-    for (const meta of list) metrics.track(meta);
+    // Skip exited metas: status is already "exited" when this fires right after
+    // onExit, so tracking them would undo that untrack (re-read the whole
+    // transcript sync + leak a watcher). Also untrack anything no longer listed
+    // (×/eviction) in case its exit event never arrived.
+    for (const meta of list) if (meta.status !== "exited") metrics.track(meta);
+    const live = new Set(list.map((m) => m.id));
+    for (const id of metrics.ids()) if (!live.has(id)) metrics.untrack(id);
     broadcast({ t: "sessions", sessions: list });
   },
   onExit: (id, code) => {
@@ -64,9 +70,9 @@ const sessions = createSessionManager({
 
 // Compute the Claude Code version warning once, off the boot path so a slow
 // `claude --version` never delays server start. Push to anyone already connected.
-setTimeout(() => {
+setTimeout(async () => {
   try {
-    claudeWarn = claudeVersionWarning();
+    claudeWarn = await claudeVersionWarning();
     if (claudeWarn) {
       console.warn("[cc-deck]", claudeWarn);
       broadcast({ t: "error", message: claudeWarn });
@@ -160,6 +166,9 @@ app.get("/ws", { websocket: true }, async (socket, req) => {
     t: "hello",
     version: VERSION,
     sessions: sessions.list(),
+    // Live-metrics snapshot: without it a reloaded/reconnected tab shows every
+    // unselected session as idle/— until its next transcript change.
+    metrics: metrics.getAll(),
     usage: usage.get(),
     projects: await projects.lists(),
   });

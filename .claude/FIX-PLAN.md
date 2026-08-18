@@ -4,12 +4,24 @@
 > **15건 확정**(중복 1건 제외), 10건 기각. 아래는 검증 통과분만 수록.
 > 실행 주체: Opus 오케스트레이터 + Sonnet 구현 서브에이전트 (C:\project\CLAUDE.md 멀티모델 전략 준수).
 
+> **상태 (2026-08-18): DONE / 아카이브.** 확정 15건은 b9ab647(2026-07-02)에 전부 반영·배포됨.
+> 테마 1 sessions 디스커버리/바인딩 ✅ · 테마 2 프론트 WS 수명주기 ✅ · 테마 3 스크립트/리포트 ✅
+> (선택 항목 3.7 Host 헤더 검증만 미적용 — WS Origin 체크가 최종 방어라 그대로 둠).
+> 이 문서는 이력 + 아래 '기각된 발견' 표(재발굴 방지)를 위해 남긴다.
+> 부록 low 30건 중 이후 해결: esc() 따옴표·metricsMap 정리(c727f2e), pasteDir 7일 청소, WS 자동 재연결,
+> 그리고 2026-08-18 작업트리(미커밋)에서 'idle' 상태 제거, config.host 데드코드 제거, OAuth fetch
+> 타임아웃(15s)+refreshNow 합류, exited 엔트리 30분 TTL 정리, exited pty input/resize 차단, resize 값 검증,
+> 스크롤백 LF 정렬 트림, 테일러 fd 누수/truncate 처리, summarize() env 정리, 리포트 버튼 재연결 시 복구,
+> 재시작 시 새 Chrome 탭(run-server.vbs), tsx/cross-env → dependencies, README 최신화.
+> 기각 추가(재발굴 금지): client.attached 증가(무시 가능), 만료 토큰 시 statusline 폴백 생략(v1 문서화 동작),
+> 슬립 후 리포트 스케줄 catch-up(날짜 인지 리포트 생성이 선행돼야 함 — v2 아이디어), 리로드 시 기존
+> 완료/승인 상태 재깜빡임(설계상 선택).
+
 ## 시작 전 필수
 
-- [ ] 워킹트리에 미커밋 변경 8파일 있음 (server/config.ts, index.ts, util.ts, shared/types.ts,
-      web/src/{main,sessions,terminal}.ts, web/style.css). **수정 전 현재 WIP를 먼저 커밋**해서
-      리뷰 수정분과 섞이지 않게 할 것.
-- [ ] 수정 완료 후 배포: `npm run build` → `npm run restart` (restart는 재빌드 안 함 — 의도된 동작).
+- [x] WIP 커밋 (b9ab647에 포함) — 워킹트리 8파일(server/config.ts, index.ts, util.ts, shared/types.ts,
+      web/src/{main,sessions,terminal}.ts, web/style.css)을 리뷰 수정분과 섞이지 않게 먼저 커밋.
+- [x] 배포 (재시작 완료): `npm run build` → `npm run restart` (restart는 재빌드 안 함 — 의도된 동작).
 
 ---
 

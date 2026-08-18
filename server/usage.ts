@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { config } from "./config.js";
-import { readJsonSafe } from "./util.js";
+import { detectClaudeVersion, readJsonSafe, VERIFIED_CLAUDE_VERSION } from "./util.js";
 import type { AccountUsage, UsagePoller, UsagePollerHandlers } from "../shared/types.js";
 
 // ── Credentials ───────────────────────────────────────────────────────────────
@@ -100,19 +100,6 @@ function parseOAuthResponse(body: RawOAuthUsage): Pick<AccountUsage, "fiveHour" 
   };
 }
 
-// Resolved once on first use.
-let cachedClaudeVer: string | null = null;
-function getClaudeVersion(): string {
-  if (cachedClaudeVer !== null) return cachedClaudeVer;
-  try {
-    const out = execSync("claude --version", { encoding: "utf8", timeout: 5_000 }).trim();
-    cachedClaudeVer = /^(\S+)/.exec(out)?.[1] ?? "2.1.0";
-  } catch {
-    cachedClaudeVer = "2.1.0";
-  }
-  return cachedClaudeVer;
-}
-
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 const NONE: AccountUsage = {
@@ -159,8 +146,11 @@ export function createUsagePoller(
           Authorization: `Bearer ${oauth.accessToken}`,
           "anthropic-beta": config.oauth.beta,
           "anthropic-version": "2023-06-01",
-          "User-Agent": `claude-cli/${getClaudeVersion()}`,
+          "User-Agent": `claude-cli/${detectClaudeVersion() ?? VERIFIED_CLAUDE_VERSION}`,
         },
+        // undici's default is a 300s headers timeout — a stalled connection would
+        // otherwise pin one poll for 5 min while the interval spawns more.
+        signal: AbortSignal.timeout(15_000),
       });
       if (!resp.ok) return null;
       body = (await resp.json()) as RawOAuthUsage;
@@ -230,7 +220,7 @@ export function createUsagePoller(
   }
 
   // One poll cycle: OAuth -> statusline -> stale cache -> none.
-  async function refreshNow(): Promise<void> {
+  async function refreshOnce(): Promise<void> {
     const oauth = await tryOAuth();
     if (oauth) {
       last = oauth;
@@ -254,6 +244,17 @@ export function createUsagePoller(
 
     last = { ...NONE, updatedAt: Date.now() };
     handlers.onUsage(last);
+  }
+
+  // Coalesce overlapping calls (interval tick + user "refresh" spam + a slow
+  // network) so an older response can never overwrite a newer one.
+  let inflight: Promise<void> | null = null;
+  function refreshNow(): Promise<void> {
+    if (inflight) return inflight;
+    inflight = refreshOnce().finally(() => {
+      inflight = null;
+    });
+    return inflight;
   }
 
   function start(): void {

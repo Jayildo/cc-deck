@@ -106,9 +106,17 @@ function installWindows() {
     `sh.Run """${openCmdPath}""", 0, False\r\n`; // wait + open Chrome (hidden launcher, visible browser)
   fs.writeFileSync(vbsPath, vbs, "utf8");
 
+  // Server-only launcher for `npm run restart` (no opener → no new tab per restart).
+  const serverVbsPath = path.join(deckDir, "run-server.vbs");
+  const serverVbs =
+    `Set sh = CreateObject("WScript.Shell")\r\n` +
+    `sh.Run """${cmdPath}""", 0, False\r\n`;
+  fs.writeFileSync(serverVbsPath, serverVbs, "utf8");
+
   console.log("✅ cc-deck autostart installed.\n");
   console.log("   launcher : " + cmdPath);
   console.log("   opener   : " + openCmdPath);
+  console.log("   restart  : " + serverVbsPath);
   console.log("   startup  : " + vbsPath);
   console.log("   node     : " + nodeExe);
   console.log("   chrome   : " + chromeExe);

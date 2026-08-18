@@ -2,13 +2,13 @@ import "@xterm/xterm/css/xterm.css";
 import "../style.css";
 
 import type { ServerMsg, SessionMetrics, SessionMeta } from "../../shared/types";
-import { connect, onMessage, send } from "./ws.js";
+import { connect, onConnectionStatus, onMessage, send } from "./ws.js";
 import { initTerminalContainer, write, activate, getActiveId, disposeTerminal, terminalIds, focusTerminal, resetTerminal, setTerminalsTheme } from "./terminal.js";
 import { initSessions, updateSessions, updateSessionMetrics, setSelectedSession, focusSidebar, clearCursor, siblingSession } from "./sessions.js";
 import { renderUsage } from "./usage.js";
 import { initProjectPicker, updateProjects } from "./projects.js";
 import { initQuickTabs } from "./quicktabs.js";
-import { initReports, setReports, showReport, setReportStatus } from "./reports.js";
+import { initReports, setReports, showReport, setReportStatus, isReportOpen } from "./reports.js";
 import { fmtNum, shortModel } from "./fmt.js";
 import { THEMES, THEME_ORDER, DEFAULT_THEME, STORAGE_KEY, type ThemeName } from "./themes.js";
 
@@ -26,6 +26,7 @@ const openBtn = document.getElementById("open-session-btn") as HTMLButtonElement
 const cancelBtn = document.getElementById("cancel-session-btn") as HTMLButtonElement;
 const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
 const toastContainer = document.getElementById("toast-container") as HTMLElement;
+const connBadge = document.getElementById("conn-badge") as HTMLElement;
 const themeSwitcherEl = document.getElementById("theme-switcher") as HTMLElement;
 
 const mModel = document.getElementById("m-model") as HTMLElement;
@@ -102,28 +103,34 @@ function reconcileClosed(list: SessionMeta[]): void {
 }
 
 // ── New session form ──────────────────────────────────────────────────────────
+function setNewFormOpen(open: boolean): void {
+  newForm.classList.toggle("hidden", !open);
+  newBtn.setAttribute("aria-expanded", String(open));
+}
+
 newBtn.addEventListener("click", () => {
-  newForm.classList.toggle("hidden");
-  if (!newForm.classList.contains("hidden")) {
+  const open = newForm.classList.contains("hidden");
+  setNewFormOpen(open);
+  if (open) {
     send({ t: "listProjects" }); // refresh recents in case sessions changed
     cwdInput.focus();
   }
 });
 
-cancelBtn.addEventListener("click", () => newForm.classList.add("hidden"));
+cancelBtn.addEventListener("click", () => setNewFormOpen(false));
 
 function submitOpen(): void {
   const cwd = cwdInput.value.trim();
   if (!cwd) return;
   send({ t: "open", cwd });
   cwdInput.value = "";
-  newForm.classList.add("hidden");
+  setNewFormOpen(false);
 }
 
 openBtn.addEventListener("click", submitOpen);
 cwdInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") submitOpen();
-  if (e.key === "Escape") newForm.classList.add("hidden");
+  if (e.key === "Escape") setNewFormOpen(false);
 });
 
 // ── Usage refresh ─────────────────────────────────────────────────────────────
@@ -159,6 +166,7 @@ function renderThemeSwitcher(): void {
     btn.type = "button";
     btn.className = "theme-swatch";
     btn.title = def.label;
+    btn.setAttribute("aria-label", def.label);
     btn.setAttribute("aria-pressed", String(name === active));
     btn.style.background = `linear-gradient(135deg, ${def.previewBg} 50%, ${def.previewAccent} 50%)`;
     btn.addEventListener("click", () => applyTheme(name));
@@ -175,11 +183,29 @@ function showToast(msg: string): void {
   setTimeout(() => el.remove(), 4500);
 }
 
+// ── Connection state ──────────────────────────────────────────────────────────
+// onStatus(false) re-fires on every failed 3s retry while the server is down, so
+// only toast on the up→down transition (and not on a first load with no server).
+let wsUp = false;
+onConnectionStatus((up) => {
+  document.body.classList.toggle("disconnected", !up);
+  connBadge.classList.toggle("hidden", up);
+  if (!up && wsUp) showToast("서버 연결 끊김 — 재연결 중…");
+  wsUp = up;
+});
+
 // ── WS message dispatch ───────────────────────────────────────────────────────
 onMessage((msg: ServerMsg) => {
   switch (msg.t) {
     case "hello":
       updateSessions(msg.sessions);
+      // Snapshot of every session's metrics — without it, unselected sessions
+      // show '대기 / —' after a reload until their next transcript write.
+      for (const m of msg.metrics ?? []) {
+        latestMetrics.set(m.id, m);
+        updateSessionMetrics(m);
+        if (m.id === getActiveId()) showMetrics(m);
+      }
       renderUsage(msg.usage);
       updateProjects(msg.projects);
       reconcileClosed(msg.sessions);
@@ -188,6 +214,10 @@ onMessage((msg: ServerMsg) => {
       // show; the server replays scrollback, which the "scrollback" case resets
       // before writing (below) so there's no duplication.
       for (const id of terminalIds()) send({ t: "attach", id });
+      // A reportStatus{busy:false} lost during the gap (or a server restart) would
+      // otherwise leave 생성 disabled forever.
+      setReportStatus("", false);
+      if (isReportOpen()) send({ t: "listReports" });
       break;
 
     case "sessions":
@@ -258,7 +288,7 @@ void (async () => {
   initSessions(sessionListEl, selectSession, enterSession);
   initProjectPicker(pickerEl, (path) => {
     send({ t: "open", cwd: path });
-    newForm.classList.add("hidden");
+    setNewFormOpen(false);
   });
   // 상단 고정 프로젝트 탭 — 대표님 `cc` 셸 메뉴를 옮긴 것.
   // 탭 클릭 = 그 폴더에서 새 세션 열기 + (cc 처럼) "/start" 클립보드 복사.

@@ -17,12 +17,21 @@ const SLOW_POLL_MS = 3_000;
 // later, and /clear rolls the session id to a brand-new transcript mid-life.
 const FAST_POLL_WINDOW_MS = 25_000;
 const POLL_SKEW_MS = 2_000;
+// Exited rows stay visible this long (so the final output can still be read),
+// then are evicted like a user × so memory / sidebar growth stays bounded.
+const EXITED_TTL_MS = 30 * 60_000;
+// Hysteresis: trim scrollback once per ~64 KB of new output instead of on every
+// PTY event (a full re-encode of the 256 KB buffer costs ~1 ms per event at cap).
+const SCROLLBACK_TRIM_AT = Math.floor(config.scrollbackBytes * 1.25);
 
 interface SessionEntry {
   meta: SessionMeta;
   terminal: ReturnType<typeof pty.spawn>;
   scrollback: string;
+  /** Approximate UTF-8 byte length of scrollback; resynced at every trim. */
+  sbBytes: number;
   discoveryTimer?: ReturnType<typeof setTimeout>;
+  evictTimer?: ReturnType<typeof setTimeout>;
   discoveryStopped?: boolean;
   /** ANSI-stripped tail of recent PTY output, used to detect the permission
    *  prompt. Reset when the user answers so stale prompt text can't re-trigger. */
@@ -65,11 +74,22 @@ function refreshPermission(entry: SessionEntry, now: number): boolean {
   return true;
 }
 
-/** Trim scrollback to stay within the byte cap, dropping from the front. */
-function trimScrollback(sb: string, cap: number): string {
-  if (Buffer.byteLength(sb, "utf8") <= cap) return sb;
-  const buf = Buffer.from(sb, "utf8");
-  return buf.subarray(buf.length - cap).toString("utf8");
+/** Post-exit cleanup for node-pty's legacy conpty path (win32, no conptyDll):
+ *  (1) it never destroys its conin socket — not even on kill() — so every
+ *  self-exited session would leave a conhost.exe (~12 MB) alive for the server's
+ *  lifetime; (2) a later kill() (× or TTL eviction, up to 30 min after exit) forks
+ *  a console-list agent for the long-dead _innerPid and process.kill()s every
+ *  member of whatever console that pid belongs to NOW — Windows reuses pids
+ *  aggressively, so zero it: kill() then skips the sweep but still releases the
+ *  HPCON and disposes the conout worker. Private fields; optional-chained so a
+ *  rename in a future node-pty degrades to a no-op. */
+function releaseConin(t: pty.IPty): void {
+  if (process.platform !== "win32") return;
+  try {
+    const agent = (t as unknown as { _agent?: { _inSocket?: { destroy(): void }; _innerPid?: number } })._agent;
+    agent?._inSocket?.destroy();
+    if (agent && typeof agent._innerPid === "number") agent._innerPid = 0;
+  } catch { /* best-effort */ }
 }
 
 export function createSessionManager(handlers: SessionManagerHandlers): SessionManager {
@@ -89,9 +109,11 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
     return { meta: entry.meta, scrollback: entry.scrollback };
   }
 
+  // Exited pty: node-pty throws on resize (would surface as an error toast every
+  // time an exited row is selected) and silently drops writes — refuse both.
   function input(id: string, data: string): void {
     const entry = sessions.get(id);
-    if (!entry) return;
+    if (!entry || entry.meta.status === "exited") return;
     entry.terminal.write(data);
     // The user is answering (or otherwise interacting): drop the permission blink
     // immediately, wipe the stale prompt text so it can't re-trigger, and suppress
@@ -105,7 +127,10 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
   }
 
   function resize(id: string, cols: number, rows: number): void {
-    sessions.get(id)?.terminal.resize(cols, rows);
+    const entry = sessions.get(id);
+    if (!entry || entry.meta.status === "exited") return;
+    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1 || cols > 4096 || rows > 4096) return;
+    entry.terminal.resize(cols, rows);
   }
 
   function close(id: string): void {
@@ -113,23 +138,33 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
     if (!entry) return;
     entry.discoveryStopped = true;
     clearTimeout(entry.discoveryTimer);
+    clearTimeout(entry.evictTimer);
     const { pid } = entry.terminal;
-    try { entry.terminal.kill(); } catch { /* already dead */ }
-    // Reap the ConPTY process tree on Windows
-    if (process.platform === "win32" && pid) {
-      try {
-        execFileSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore" });
-      } catch { /* best-effort */ }
-    } else if (pid) {
-      // node-pty's default kill() sends SIGHUP; a process that ignores or handles
-      // it (or is mid-cleanup) can outlive the session. Force-kill as a
-      // best-effort second pass — mirrors the win32 taskkill /F above.
-      try {
-        entry.terminal.kill("SIGKILL");
-      } catch { /* already dead */ }
+    // win32: kill() even on an exited pty — it releases the HPCON and stops the
+    // conout worker thread (the console sweep is disarmed by releaseConin). POSIX:
+    // nothing is left to release after exit and kill() would SIGHUP a possibly
+    // reused pid, so skip it. Skip the process-tree reap when the process is
+    // already gone (a synchronous taskkill against a dead pid is ~50 ms wasted).
+    if (process.platform === "win32" || entry.meta.status !== "exited") {
+      try { entry.terminal.kill(); } catch { /* already dead */ }
     }
-    // User-initiated close: drop the entry so dead sessions don't pile up.
-    // (Natural process exit keeps the entry marked "exited" for visibility.)
+    if (entry.meta.status !== "exited") {
+      // Reap the ConPTY process tree on Windows
+      if (process.platform === "win32" && pid) {
+        try {
+          execFileSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore" });
+        } catch { /* best-effort */ }
+      } else if (pid) {
+        // node-pty's default kill() sends SIGHUP; a process that ignores or handles
+        // it (or is mid-cleanup) can outlive the session. Force-kill as a
+        // best-effort second pass — mirrors the win32 taskkill /F above.
+        try {
+          entry.terminal.kill("SIGKILL");
+        } catch { /* already dead */ }
+      }
+    }
+    // Drop the entry so dead sessions don't pile up (user ×, or the EXITED_TTL_MS
+    // eviction after a natural exit).
     sessions.delete(id);
     handlers.onSessions(list());
   }
@@ -176,6 +211,11 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
     for (const [k, v] of Object.entries(process.env)) {
       if (v === undefined) continue;
       if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE")) continue;
+      // The autostart launcher (run-server.cmd/.sh, `npm start`) sets
+      // NODE_ENV=production for the server; leaked into hosted shells it makes
+      // npm omit/prune devDependencies (and flips Vite/express into prod mode).
+      // Only that value is ours to strip — a user's own NODE_ENV stays.
+      if (k === "NODE_ENV" && v === "production") continue;
       childEnv[k] = v;
     }
 
@@ -195,12 +235,23 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
       createdAt: spawnTime,
     };
 
-    const entry: SessionEntry = { meta, terminal, scrollback: "", permClean: "", permSuppressUntil: 0 };
+    const entry: SessionEntry = { meta, terminal, scrollback: "", sbBytes: 0, permClean: "", permSuppressUntil: 0 };
     sessions.set(id, entry);
 
     terminal.onData((data: string) => {
       if (entry.meta.status === "starting") entry.meta.status = "active";
-      entry.scrollback = trimScrollback(entry.scrollback + data, config.scrollbackBytes);
+      entry.scrollback += data;
+      entry.sbBytes += Buffer.byteLength(data, "utf8");
+      if (entry.sbBytes > SCROLLBACK_TRIM_AT) {
+        // Cut on an LF (single-byte ASCII) just past the cap so the replayed
+        // front never starts mid-UTF-8 char or mid-escape-sequence.
+        const buf = Buffer.from(entry.scrollback, "utf8");
+        let start = buf.length - config.scrollbackBytes;
+        const nl = buf.indexOf(0x0a, start);
+        if (nl !== -1 && nl - start <= 4096) start = nl + 1;
+        entry.scrollback = buf.subarray(start).toString("utf8");
+        entry.sbBytes = buf.length - start;
+      }
       handlers.onData(id, data);
 
       // Permission-prompt detection: the prompt lives only in the PTY stream, so
@@ -211,11 +262,16 @@ export function createSessionManager(handlers: SessionManagerHandlers): SessionM
     });
 
     terminal.onExit(({ exitCode }) => {
+      releaseConin(entry.terminal);
       entry.discoveryStopped = true;
       clearTimeout(entry.discoveryTimer);
       entry.meta.status = "exited";
       handlers.onExit(id, exitCode ?? 0);
       handlers.onSessions(list());
+      // Same teardown as × (HPCON release, map delete, broadcast) once the TTL runs out.
+      entry.evictTimer = setTimeout(() => {
+        if (sessions.get(id) === entry) close(id);
+      }, EXITED_TTL_MS);
     });
 
     // Let clients see the new session immediately
