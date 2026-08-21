@@ -98,8 +98,13 @@ the rest structured. `SessionStatus` = starting | active | exited.
   `anthropic-beta: oauth-2025-04-20`, User-Agent `claude-cli/<detected version>`).
   Real shape: `five_hour`/`seven_day` → `{utilization (direct %), resets_at (ISO)}`.
   **utilization is already 0..100 — never rescale.** Fetch has
-  `AbortSignal.timeout(15s)`; `refreshNow()` coalesces overlapping calls. Fallback =
-  statusline tee feed → stale cache. Expired token → "reauth needed" (no refresh in v1).
+  `AbortSignal.timeout(15s)`; `refreshNow()` coalesces overlapping calls, but the
+  inflight slot is **deadline-capped (45s) + generation-guarded** — a fetch that
+  wedged across sleep/wake never settled and froze the poller (and the 5H/7D bars)
+  for 3 days (2026-08-18); non-ok bodies are cancelled to free the socket, and
+  `get()` re-flags a >5-interval-old snapshot stale so a dead poller shows amber,
+  not green. Fallback = statusline tee feed → stale cache. Expired token →
+  "reauth needed" (no refresh in v1).
 - **Daily report** (`server/reports.ts`): at `config.reportTime` (default 23:30,
   `CC_DECK_REPORT_TIME`; scheduler ticks every 30s, once per day) and on the 📋
   button, gathers today's main-chain prompts/tools/files + git commits per project

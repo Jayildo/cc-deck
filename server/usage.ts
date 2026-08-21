@@ -85,7 +85,13 @@ function pickPct(w: RawWindow): number | undefined {
 
 function pickResetsAt(w: RawWindow): string | undefined {
   for (const v of [w.resets_at, w.reset_at, w.resetsAt]) {
-    if (typeof v === "number") return new Date(v).toISOString();
+    if (typeof v === "number") {
+      // An out-of-range epoch yields Invalid Date and toISOString() would
+      // throw — skip to the next candidate field instead.
+      const d = new Date(v);
+      if (!Number.isNaN(d.getTime())) return d.toISOString();
+      continue;
+    }
     if (typeof v === "string") return v;
   }
   return undefined;
@@ -117,7 +123,7 @@ export function createUsagePoller(
   let timer: ReturnType<typeof setInterval> | null = null;
 
   // Source A: OAuth (accurate, includes reset times).
-  async function tryOAuth(): Promise<AccountUsage | null> {
+  async function tryOAuth(signal: AbortSignal): Promise<AccountUsage | null> {
     const creds = await readCredentials();
     const oauth = creds?.claudeAiOauth;
     if (!oauth?.accessToken) return null;
@@ -139,7 +145,7 @@ export function createUsagePoller(
           };
     }
 
-    let body: RawOAuthUsage;
+    let parsed: Pick<AccountUsage, "fiveHour" | "sevenDay">;
     try {
       const resp = await fetch(config.oauth.usageUrl, {
         headers: {
@@ -148,31 +154,31 @@ export function createUsagePoller(
           "anthropic-version": "2023-06-01",
           "User-Agent": `claude-cli/${detectClaudeVersion() ?? VERIFIED_CLAUDE_VERSION}`,
         },
-        // undici's default is a 300s headers timeout — a stalled connection would
-        // otherwise pin one poll for 5 min while the interval spawns more.
-        signal: AbortSignal.timeout(15_000),
+        // 15s cap (undici's default headers timeout is 300s — a stalled
+        // connection would otherwise pin one poll for 5 min) + the cycle's
+        // abandon signal, so a wedge the timer misses is torn down for real.
+        signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
       });
-      if (!resp.ok) return null;
-      body = (await resp.json()) as RawOAuthUsage;
+      if (!resp.ok) {
+        // Release the connection — an unread error body keeps its socket reserved.
+        void resp.body?.cancel().catch(() => undefined);
+        return null;
+      }
+      // Parse inside the try: a malformed body must fall through to the
+      // statusline/cache fallbacks, not reject the whole cycle.
+      parsed = parseOAuthResponse((await resp.json()) as RawOAuthUsage);
     } catch {
       return null;
     }
 
-    const { fiveHour, sevenDay } = parseOAuthResponse(body);
-    const result: AccountUsage = {
+    return {
       source: "oauth",
-      fiveHour,
-      sevenDay,
+      ...parsed,
       plan: oauth.subscriptionType,
       tier: oauth.rateLimitTier,
       updatedAt: Date.now(),
       stale: false,
     };
-
-    // Persist to cache (best-effort).
-    fsp.writeFile(config.paths.usageCache, JSON.stringify(result), "utf8").catch(() => undefined);
-
-    return result;
   }
 
   // Source B: Statusline feed (opt-in tee, no reset times).
@@ -219,42 +225,65 @@ export function createUsagePoller(
     };
   }
 
-  // One poll cycle: OAuth -> statusline -> stale cache -> none.
-  async function refreshOnce(): Promise<void> {
-    const oauth = await tryOAuth();
-    if (oauth) {
-      last = oauth;
-      handlers.onUsage(last);
-      return;
-    }
+  // One poll cycle: OAuth -> statusline -> stale cache -> none. Returns the
+  // result instead of committing it so refreshNow can drop an abandoned cycle.
+  async function computeOnce(signal: AbortSignal): Promise<AccountUsage> {
+    const oauth = await tryOAuth(signal);
+    if (oauth) return oauth;
 
     const sl = tryStatusline();
-    if (sl) {
-      last = sl;
-      handlers.onUsage(last);
-      return;
-    }
+    if (sl) return sl;
 
     const cached = await readJsonSafe<AccountUsage>(config.paths.usageCache);
-    if (cached) {
-      last = { ...cached, stale: true };
-      handlers.onUsage(last);
-      return;
-    }
+    if (cached) return { ...cached, stale: true };
 
-    last = { ...NONE, updatedAt: Date.now() };
-    handlers.onUsage(last);
+    return { ...NONE, updatedAt: Date.now() };
   }
 
   // Coalesce overlapping calls (interval tick + user "refresh" spam + a slow
-  // network) so an older response can never overwrite a newer one.
+  // network) so an older response can never overwrite a newer one. The slot is
+  // deadline-capped: a cycle that never settles must not disable the poller
+  // until restart (2026-08-18: a fetch wedged across sleep/wake stayed pending
+  // forever and froze usage for days). On expiry the old cycle is explicitly
+  // aborted (the wedge's own timeout timer may be lost — only an abort tears
+  // the socket down) and the generation guard drops a late straggler's commit.
+  const INFLIGHT_DEADLINE_MS = 45_000;
   let inflight: Promise<void> | null = null;
+  let inflightSince = 0;
+  let inflightAbort: AbortController | null = null;
+  let gen = 0;
+  // Cache writes are chained: two committed cycles' unordered writeFiles could
+  // otherwise interleave truncate/write on the same path (older wins / garbage).
+  let cacheWrite: Promise<unknown> = Promise.resolve();
   function refreshNow(): Promise<void> {
-    if (inflight) return inflight;
-    inflight = refreshOnce().finally(() => {
-      inflight = null;
-    });
-    return inflight;
+    if (inflight && Date.now() - inflightSince < INFLIGHT_DEADLINE_MS) return inflight;
+    inflightAbort?.abort();
+    const ac = new AbortController();
+    inflightAbort = ac;
+    const myGen = ++gen;
+    inflightSince = Date.now();
+    const p = computeOnce(ac.signal)
+      .then((u) => {
+        if (myGen !== gen) return; // abandoned cycle settled late — drop it
+        last = u;
+        handlers.onUsage(u);
+        if (u.source === "oauth" && !u.stale) {
+          // Persist to cache (best-effort).
+          cacheWrite = cacheWrite
+            .then(() => fsp.writeFile(config.paths.usageCache, JSON.stringify(u), "utf8"))
+            .catch(() => undefined);
+        }
+      })
+      .catch((err) => {
+        // computeOnce shouldn't reject (every source catches its own errors) —
+        // if it somehow does, say so instead of silently freezing usage.
+        console.error("[cc-deck] usage refresh failed:", err);
+      })
+      .finally(() => {
+        if (inflight === p) inflight = null;
+      });
+    inflight = p;
+    return p;
   }
 
   function start(): void {
@@ -270,7 +299,10 @@ export function createUsagePoller(
   }
 
   function get(): AccountUsage {
-    return last;
+    // hello snapshot: if the last update is ancient (poller dead in a way the
+    // watchdog didn't catch), at least show amber "stale", not a healthy badge.
+    const ancient = last.updatedAt > 0 && Date.now() - last.updatedAt > 5 * (handlers.intervalMs ?? 60_000);
+    return ancient ? { ...last, stale: true } : last;
   }
 
   return { start, stop, get, refreshNow };
