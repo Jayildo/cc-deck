@@ -122,7 +122,7 @@ export function contextWindowFor(model: string | undefined): number {
 // ⚠️ WHEN RE-VERIFYING by hand, bump this to the version you checked (what
 // `cmd /d /s /c claude --version` prints from the SERVER env — %APPDATA%\npm on
 // Windows, not an fnm/Git-Bash shim that may shadow it).
-export const VERIFIED_CLAUDE_VERSION = "2.1.234";
+export const VERIFIED_CLAUDE_VERSION = "2.1.251";
 
 /** Verbatim fragments in the CLI bundle behind sessions.ts PERMISSION_RE. The
  *  "Do you want to X" prompt is assembled at render time from "Do you want to "
