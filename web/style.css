@@ -247,6 +247,12 @@ input:focus-visible,
 .badge-gray  { background: var(--surface2); color: var(--muted); }
 .badge-amber { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber); }
 .badge-red   { background: color-mix(in srgb, var(--red) 16%, transparent);   color: var(--red); }
+/* Degraded usage numbers: still real, just old — drain confidence out of them. */
+#usage-windows.stale .bar-fill { filter: grayscale(.75); opacity: .55; }
+#usage-windows.stale .win-pct  { color: var(--muted); }
+/* WS down: everything here is frozen. Dim it like the terminal (:252). */
+body.disconnected #usage-windows > *:not(#conn-badge) { opacity: .45; }
+.badge { white-space: nowrap; } /* Korean text + elapsed time is wider than "oauth" */
 #conn-badge.hidden { display: none; }
 /* Dim the terminal pane while the WS is down — keystrokes go nowhere until reconnect. */
 body.disconnected #terminal-wrap { opacity: 0.5; }

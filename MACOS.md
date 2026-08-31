@@ -122,12 +122,21 @@ through to it unchanged.
   architecture or Node version. Confirm `node -v` is 24+, then
   `rm -rf node_modules && npm install`. If it tries to compile, run
   `xcode-select --install` first.
-- **Account usage shows "reauth needed" / sessions list is empty** — either
-  you're not logged into Claude Code on this machine yet, or the Keychain item
-  "Claude Code-credentials" can't be read by the server. Run `claude` in a
-  terminal and complete login; if macOS prompts for Keychain access when cc-deck
-  runs under launchd, allow it. cc-deck only reads the token (file, then
-  Keychain) and never manages auth itself.
+- **Account usage shows a red badge** — there are two, and both need **two
+  consecutive** bad cycles, so a one-off failure never trips either. "재로그인
+  필요" means the usage endpoint answered 401/403 twice and the stored token is
+  genuinely dead. "로그인 필요" means the token could not be read at all —
+  either you aren't logged in on this machine, or the Keychain read kept
+  failing (a single access prompt won't do it; a standing denial will). Both
+  are cleared by running `claude` in a terminal and completing login. An amber
+  "토큰 만료" badge is a different, harmless state — the local clock says the
+  token has expired, and it self-heals within a minute of any `claude` session
+  running (the CLI refreshes it lazily; cc-deck does not refresh tokens itself).
+- **Sessions list is empty** — either you're not logged into Claude Code on this
+  machine yet, or the Keychain item "Claude Code-credentials" can't be read by
+  the server. Run `claude` in a terminal and complete login; if macOS prompts
+  for Keychain access when cc-deck runs under launchd, allow it. cc-deck only
+  reads the token (file, then Keychain) and never manages auth itself.
 - **`launchctl bootstrap` fails during `install:autostart`** — usually means a
   stale copy is already loaded. The installer already runs `bootout` first, but
   if it still fails, run manually: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.ccdeck.dashboard.plist`,

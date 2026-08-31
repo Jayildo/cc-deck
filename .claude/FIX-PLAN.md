@@ -13,7 +13,9 @@
 > 타임아웃(15s)+refreshNow 합류, exited 엔트리 30분 TTL 정리, exited pty input/resize 차단, resize 값 검증,
 > 스크롤백 LF 정렬 트림, 테일러 fd 누수/truncate 처리, summarize() env 정리, 리포트 버튼 재연결 시 복구,
 > 재시작 시 새 Chrome 탭(run-server.vbs), tsx/cross-env → dependencies, README 최신화.
-> 기각 추가(재발굴 금지): client.attached 증가(무시 가능), 만료 토큰 시 statusline 폴백 생략(v1 문서화 동작),
+> 기각 추가(재발굴 금지): client.attached 증가(무시 가능), ~~만료 토큰 시 statusline 폴백 생략(v1 문서화
+> 동작)~~ **번복(2026-08-31)** — `tryOAuth`가 `AccountUsage`를 직접 반환하지 않고 진단(`AuthNote`)만
+> 반환하도록 분리해 폴백이 실제로 도달하게 고침(server/usage.ts §4.1 — 토큰 자동갱신 v2 자체는 미구현),
 > 슬립 후 리포트 스케줄 catch-up(날짜 인지 리포트 생성이 선행돼야 함 — v2 아이디어), 리로드 시 기존
 > 완료/승인 상태 재깜빡임(설계상 선택).
 
@@ -161,7 +163,8 @@
 
 pasteDir 무한 증식/파일명 충돌 · 'idle' 상태 미구현(항상 active) · exited 세션에 input/resize 시 죽은
 pty 접근 · 스크롤백 트림이 UTF-8/ANSI 시퀀스 중간 절단 · favorites.json 비원자 쓰기 ·
-OAuth fetch 타임아웃 없음/폴 겹침 · 만료 토큰 시 statusline 폴백 건너뜀 · 테일러 fd 누수 가능성 ·
+OAuth fetch 타임아웃 없음/폴 겹침 · ~~만료 토큰 시 statusline 폴백 건너뜀~~ **번복·해결(2026-08-31,
+server/usage.ts §4.1 — 진단/데이터 분리로 폴백 도달 가능)** · 테일러 fd 누수 가능성 ·
 트랜스크립트 축소(truncate) 미처리 · getClaudeVersion execSync 5s 블로킹 · statusline 피드 무회전 ·
 리포트에 사이드체인 프롬프트 혼입 · 슬립 시 리포트 스케줄 미스 · summarize()가 CLAUDE_CODE* env 미제거 ·
 esc()가 쌍따옴표 미이스케이프 · metricsMap 미정리 · 리포트 버튼 영구 disabled 가능 ·

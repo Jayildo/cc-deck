@@ -94,8 +94,11 @@ export interface AccountUsage {
   updatedAt: number;
   /** True when the shown numbers are cached/old (poll failing). */
   stale: boolean;
-  /** Degraded-state explanation, e.g. "reauth needed", "endpoint error". */
+  /** Degraded-state explanation, e.g. "토큰 만료", "재로그인 필요", "사용량 API 503". */
   error?: string;
+  /** True only when red is warranted — the user actually has to /login.
+   *  A state that heals itself (local-clock expiry) is never red. */
+  needsLogin?: boolean;
 }
 
 // ── Project quick-pick (New Session) ─────────────────────────────────────────

@@ -122,27 +122,34 @@ export function createUsagePoller(
   let last: AccountUsage = { ...NONE };
   let timer: ReturnType<typeof setInterval> | null = null;
 
+  /** Why the OAuth source produced no numbers this cycle. Deliberately not an
+   *  AccountUsage — the old expired-token branch returned a truthy
+   *  AccountUsage, which short-circuited computeOnce and made tryStatusline()
+   *  unreachable in exactly the case it exists for. */
+  type AuthNote = Pick<AccountUsage, "error" | "needsLogin">;
+
+  // Red means the user has to act (/login), so it needs corroboration — a
+  // one-off 401 or a macOS Keychain prompt must not flip the badge red by
+  // itself. Only two red diagnoses in a row set needsLogin. needsLogin here
+  // means only "this cycle is red"; the consecutive-strike accounting happens
+  // at commit time, inside refreshNow's generation guard — an abandoned cycle
+  // settling late must not reset a live cycle's strikes.
+  function diagnose(error: string, red = false): AuthNote {
+    return { error, needsLogin: red };
+  }
+
   // Source A: OAuth (accurate, includes reset times).
-  async function tryOAuth(signal: AbortSignal): Promise<AccountUsage | null> {
+  async function tryOAuth(signal: AbortSignal): Promise<AccountUsage | AuthNote> {
     const creds = await readCredentials();
     const oauth = creds?.claudeAiOauth;
-    if (!oauth?.accessToken) return null;
+    if (!oauth?.accessToken) return diagnose("로그인 필요", true);
 
     if (oauth.expiresAt <= Date.now()) {
-      // Token expired — load cache and surface the error; no refresh in v1.
-      const cached = await readJsonSafe<AccountUsage>(config.paths.usageCache);
-      return cached
-        ? { ...cached, stale: true, error: "reauth needed" }
-        : {
-            source: "oauth",
-            fiveHour: {},
-            sevenDay: {},
-            plan: oauth.subscriptionType,
-            tier: oauth.rateLimitTier,
-            updatedAt: Date.now(),
-            stale: true,
-            error: "reauth needed",
-          };
+      // Local-clock expiry is a guess, not evidence — the CLI's own lazy
+      // refresh usually heals this within a minute of any `claude` run. Just
+      // report it and let computeOnce fall through to statusline/cache
+      // instead of short-circuiting here with a fabricated AccountUsage.
+      return diagnose("토큰 만료");
     }
 
     let parsed: Pick<AccountUsage, "fiveHour" | "sevenDay">;
@@ -162,13 +169,17 @@ export function createUsagePoller(
       if (!resp.ok) {
         // Release the connection — an unread error body keeps its socket reserved.
         void resp.body?.cancel().catch(() => undefined);
-        return null;
+        // 401/403 is the only real evidence the token is dead; anything else
+        // (429/5xx) is the endpoint being unhappy, not a login problem.
+        return resp.status === 401 || resp.status === 403
+          ? diagnose("재로그인 필요", true)
+          : diagnose(`사용량 API ${resp.status}`);
       }
       // Parse inside the try: a malformed body must fall through to the
       // statusline/cache fallbacks, not reject the whole cycle.
       parsed = parseOAuthResponse((await resp.json()) as RawOAuthUsage);
     } catch {
-      return null;
+      return diagnose("사용량 조회 실패");
     }
 
     return {
@@ -220,7 +231,9 @@ export function createUsagePoller(
       source: "statusline",
       fiveHour: { pct: toPct(fiveRaw) },
       sevenDay: { pct: toPct(sevenRaw) },
-      updatedAt: Date.now(),
+      // The feed's mtime, not Date.now() — this is up to 10 min old data and
+      // the client renders that age to the user.
+      updatedAt: mtimeMs,
       stale: false,
     };
   }
@@ -228,16 +241,24 @@ export function createUsagePoller(
   // One poll cycle: OAuth -> statusline -> stale cache -> none. Returns the
   // result instead of committing it so refreshNow can drop an abandoned cycle.
   async function computeOnce(signal: AbortSignal): Promise<AccountUsage> {
-    const oauth = await tryOAuth(signal);
-    if (oauth) return oauth;
+    const r = await tryOAuth(signal);
+    if ("source" in r) return r; // fresh OAuth numbers — nothing to diagnose
 
     const sl = tryStatusline();
-    if (sl) return sl;
+    if (sl) return { ...sl, ...r };
 
     const cached = await readJsonSafe<AccountUsage>(config.paths.usageCache);
-    if (cached) return { ...cached, stale: true };
+    if (cached) {
+      // The cache carries its *own* past diagnosis — drop it. Only this
+      // cycle's note is true, or a red badge would persist forever by
+      // round-tripping through the cache file.
+      const { error: _e, needsLogin: _n, ...rest } = cached;
+      return { ...rest, stale: true, ...r };
+    }
 
-    return { ...NONE, updatedAt: Date.now() };
+    // No numbers ever obtained — updatedAt: 0 (from NONE) is honest;
+    // Date.now() here would claim a refresh that never happened.
+    return { ...NONE, ...r };
   }
 
   // Coalesce overlapping calls (interval tick + user "refresh" spam + a slow
@@ -255,6 +276,16 @@ export function createUsagePoller(
   // Cache writes are chained: two committed cycles' unordered writeFiles could
   // otherwise interleave truncate/write on the same path (older wins / garbage).
   let cacheWrite: Promise<unknown> = Promise.resolve();
+  // Transition log: a 60s poller writing every cycle would be 1440 lines/day,
+  // so only log when the degraded-state reason actually changes — otherwise
+  // an overnight red badge leaves no trace (server.log has only the boot banner).
+  let loggedNote = "";
+  // Red means the user has to act (/login), so it needs corroboration — a
+  // one-off 401 or a macOS Keychain prompt must not flip the badge red by
+  // itself. Only two red diagnoses in a row set needsLogin. Lives here, not
+  // inside diagnose()/tryOAuth, so an abandoned cycle settling late (past the
+  // gen guard below) can never touch a live cycle's count.
+  let redStrikes = 0;
   function refreshNow(): Promise<void> {
     if (inflight && Date.now() - inflightSince < INFLIGHT_DEADLINE_MS) return inflight;
     inflightAbort?.abort();
@@ -263,8 +294,18 @@ export function createUsagePoller(
     const myGen = ++gen;
     inflightSince = Date.now();
     const p = computeOnce(ac.signal)
-      .then((u) => {
+      .then((u0) => {
         if (myGen !== gen) return; // abandoned cycle settled late — drop it
+        // Consecutive-red accounting lives inside the guard: a superseded
+        // cycle must not reset the strikes a live cycle just earned.
+        redStrikes = u0.needsLogin ? redStrikes + 1 : 0;
+        const u: AccountUsage = u0.error ? { ...u0, needsLogin: redStrikes >= 2 } : u0;
+        const key = u.error ?? "";
+        if (key !== loggedNote) {
+          loggedNote = key;
+          console.warn(key ? `[cc-deck] usage degraded: ${key} (source=${u.source})`
+                           : "[cc-deck] usage recovered");
+        }
         last = u;
         handlers.onUsage(u);
         if (u.source === "oauth" && !u.stale) {

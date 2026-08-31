@@ -103,8 +103,14 @@ the rest structured. `SessionStatus` = starting | active | exited.
   wedged across sleep/wake never settled and froze the poller (and the 5H/7D bars)
   for 3 days (2026-08-18); non-ok bodies are cancelled to free the socket, and
   `get()` re-flags a >5-interval-old snapshot stale so a dead poller shows amber,
-  not green. Fallback = statusline tee feed → stale cache. Expired token →
-  "reauth needed" (no refresh in v1).
+  not green. Fallback = statusline tee feed → stale cache, with diagnosis kept
+  separate from data (`AuthNote: {error, needsLogin}`) so a degraded OAuth source
+  still falls through to the fallback instead of shadowing it. Local-clock expiry
+  → amber "토큰 만료" (self-heals once any `claude` session runs, not a real
+  problem); a **2-strike** 401/403 → red "재로그인 필요" `needsLogin` (a one-off
+  401 or a macOS Keychain prompt must never flash red); anything else (429/5xx,
+  fetch throw) → amber with the specific reason. No automatic refresh — see
+  "v2 / later".
 - **Daily report** (`server/reports.ts`): at `config.reportTime` (default 23:30,
   `CC_DECK_REPORT_TIME`; scheduler ticks every 30s, once per day) and on the 📋
   button, gathers today's main-chain prompts/tools/files + git commits per project
@@ -139,7 +145,27 @@ on `.npmrc`); when package-lock moved but node_modules didn't, the restart windo
 - `@lydell/node-pty` 1.2.0-beta.15 (Windows spawn/UAF/deadlock fixes) — native, so
   only in a restart window: `npm install @lydell/node-pty@1.2.0-beta.15` + restart.
 - Date-aware report generation (then a scheduler catch-up after sleep makes sense).
-- Token-refresh automation (`expiresAt` → `refreshToken`).
+- **Token-refresh automation** (`expiresAt` → `refreshToken`, preemptive) — reverse-engineered
+  from the CLI 2.1.251 bundle but **not implemented**; keep these facts so a future session
+  doesn't redo the reverse-engineering. TOKEN_URL `https://platform.claude.com/v1/oauth/token`,
+  CLIENT_ID `9d1c250a-e61b-44d9-88ed-5944d1962f5e`, `POST {grant_type:"refresh_token",
+  refresh_token, client_id, scope}`; a response with no `refresh_token` means reuse the one sent.
+  On `invalid_grant` the **CLI** wipes disk `refreshToken`/`accessToken` to `""` and `expiresAt`
+  to `0` — the reason this is unbuilt: a third party that consumes a refresh token and doesn't
+  record what came back **logs the whole machine out**. Storage would need a CAS (write only if
+  disk's `refreshToken` is still `""` or the value just posted); whether the server actually
+  **rotates** the refresh token is unverified. Default scope list when credentials carry none:
+  `user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload`
+  (use the credential file's own `scopes` when present). The CLI's own refresh takes a
+  **mkdir-based** lock — dir name `.oauth_refresh.lock`, `EEXIST` = held — path **assumed**
+  under `~/.claude/`, unconfirmed. A past-due `refreshTokenExpiresAt` means refresh itself is
+  impossible; don't attempt one, only `/login` recovers it. The credentials file's top level
+  also holds `mcpOAuth` beside `claudeAiOauth` — any write must preserve unknown top-level keys
+  or it deletes the user's MCP credentials. If ever built: default OFF; refresh
+  **preemptively** at `expiresAt − 5min`, never after expiry; disk write is temp+fsync+rename,
+  never in-place; the macOS Keychain credential source stays untouched (file store only); a
+  lock-acquire failure always means "skip this cycle", never steal the lock; `invalid_grant`
+  never clears cc-deck's copy of the disk file.
 - Read-only listing of sessions opened in the user's own terminals (`~/.claude/sessions/*.json`).
 - Historical/aggregate dashboard over all transcripts (SQLite index).
 - Optional `/api/token` Host-header check (FIX-PLAN 3.7; WS Origin check is the real gate).

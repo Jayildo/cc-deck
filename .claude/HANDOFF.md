@@ -51,8 +51,9 @@ session_by: claude
   막음. 호스팅 셸에는 `NODE_ENV=production`(그 값만) 안 넘김.
 - **contextWindowFor 세대 기반** — opus/sonnet major≥5 또는 4.≥6 → 1M, fable/mythos-N → 1M, haiku → 200K.
   기존 allow-list가 `claude-opus-5`를 200K로 떨어뜨리던 실제 버그 수정.
-- **기각(재발굴 금지)** — client.attached 증가, 만료 토큰 시 statusline 폴백 생략, 슬립 후 리포트
-  catch-up(날짜 인지 리포트가 먼저 — v2), 리로드 시 기존 완료/승인 재깜빡임. FIX-PLAN 기각표도 유효.
+- **기각(재발굴 금지)** — client.attached 증가, ~~만료 토큰 시 statusline 폴백 생략~~ **번복(2026-08-31,
+  server/usage.ts §4.1 진단/데이터 분리 — FIX-PLAN.md 참조)**, 슬립 후 리포트 catch-up(날짜 인지 리포트가
+  먼저 — v2), 리로드 시 기존 완료/승인 재깜빡임. FIX-PLAN 기각표도 유효.
 
 ## 주의사항
 
