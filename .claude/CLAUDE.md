@@ -109,8 +109,13 @@ the rest structured. `SessionStatus` = starting | active | exited.
   → amber "토큰 만료" (self-heals once any `claude` session runs, not a real
   problem); a **2-strike** 401/403 → red "재로그인 필요" `needsLogin` (a one-off
   401 or a macOS Keychain prompt must never flash red); anything else (429/5xx,
-  fetch throw) → amber with the specific reason. No automatic refresh — see
-  "v2 / later".
+  fetch throw) → **backoff**: Retry-After if sent, else ×2 up to 10 min with
+  ±10% jitter (setTimeout chain, not setInterval), snapping back on any
+  success; while the shown numbers are < 5 intervals old a throttled cycle
+  keeps them silently (one "usage throttled" log line per hour), and only a
+  sustained outage turns amber with the specific reason (2026-09-04: ~170 lone
+  429s in 37h, each flipping the badge and writing two log lines). No automatic
+  token refresh — see "v2 / later".
 - **Daily report** (`server/reports.ts`): at `config.reportTime` (default 23:30,
   `CC_DECK_REPORT_TIME`; scheduler ticks every 30s, once per day) and on the 📋
   button, gathers today's main-chain prompts/tools/files + git commits per project

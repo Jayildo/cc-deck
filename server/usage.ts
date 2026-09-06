@@ -97,6 +97,16 @@ function pickResetsAt(w: RawWindow): string | undefined {
   return undefined;
 }
 
+/** Retry-After → ms. Accepts delta-seconds or an HTTP-date; undefined when the
+ *  header is absent or unparseable (then the caller's exponential backoff applies). */
+function parseRetryAfter(h: string | null): number | undefined {
+  if (!h) return undefined;
+  const s = h.trim();
+  if (/^\d+$/.test(s)) return Number(s) * 1000;
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? undefined : Math.max(0, t - Date.now());
+}
+
 function parseOAuthResponse(body: RawOAuthUsage): Pick<AccountUsage, "fiveHour" | "sevenDay"> {
   const rawFive = body.five_hour ?? body.rate_limits?.five_hour ?? null;
   const rawSeven = body.seven_day ?? body.rate_limits?.seven_day ?? null;
@@ -120,13 +130,19 @@ export function createUsagePoller(
   handlers: UsagePollerHandlers & { intervalMs?: number }
 ): UsagePoller {
   let last: AccountUsage = { ...NONE };
-  let timer: ReturnType<typeof setInterval> | null = null;
+  const baseMs = handlers.intervalMs ?? 60_000;
 
   /** Why the OAuth source produced no numbers this cycle. Deliberately not an
    *  AccountUsage — the old expired-token branch returned a truthy
    *  AccountUsage, which short-circuited computeOnce and made tryStatusline()
    *  unreachable in exactly the case it exists for. */
-  type AuthNote = Pick<AccountUsage, "error" | "needsLogin">;
+  type AuthNote = Pick<AccountUsage, "error" | "needsLogin"> & {
+    /** The endpoint itself pushed back (429/5xx/network) — the scheduler backs
+     *  off instead of re-hitting it at the base cadence. retryAfterMs is the
+     *  server's Retry-After when it sent one. Stripped before the note reaches
+     *  an AccountUsage (it is scheduling state, not something the UI shows). */
+    throttle?: { retryAfterMs?: number };
+  };
 
   // Red means the user has to act (/login), so it needs corroboration — a
   // one-off 401 or a macOS Keychain prompt must not flip the badge red by
@@ -170,16 +186,19 @@ export function createUsagePoller(
         // Release the connection — an unread error body keeps its socket reserved.
         void resp.body?.cancel().catch(() => undefined);
         // 401/403 is the only real evidence the token is dead; anything else
-        // (429/5xx) is the endpoint being unhappy, not a login problem.
-        return resp.status === 401 || resp.status === 403
-          ? diagnose("재로그인 필요", true)
-          : diagnose(`사용량 API ${resp.status}`);
+        // (429/5xx) is the endpoint being unhappy, not a login problem — and
+        // hitting it again in 60s only earns another 429, so flag it for backoff.
+        if (resp.status === 401 || resp.status === 403) return diagnose("재로그인 필요", true);
+        return {
+          ...diagnose(`사용량 API ${resp.status}`),
+          throttle: { retryAfterMs: parseRetryAfter(resp.headers.get("retry-after")) },
+        };
       }
       // Parse inside the try: a malformed body must fall through to the
       // statusline/cache fallbacks, not reject the whole cycle.
       parsed = parseOAuthResponse((await resp.json()) as RawOAuthUsage);
     } catch {
-      return diagnose("사용량 조회 실패");
+      return { ...diagnose("사용량 조회 실패"), throttle: {} };
     }
 
     return {
@@ -240,12 +259,14 @@ export function createUsagePoller(
 
   // One poll cycle: OAuth -> statusline -> stale cache -> none. Returns the
   // result instead of committing it so refreshNow can drop an abandoned cycle.
-  async function computeOnce(signal: AbortSignal): Promise<AccountUsage> {
+  // The throttle flag rides alongside (never inside) the AccountUsage.
+  async function computeOnce(signal: AbortSignal): Promise<{ u: AccountUsage; throttle?: AuthNote["throttle"] }> {
     const r = await tryOAuth(signal);
-    if ("source" in r) return r; // fresh OAuth numbers — nothing to diagnose
+    if ("source" in r) return { u: r }; // fresh OAuth numbers — nothing to diagnose
+    const { throttle, ...note } = r;
 
     const sl = tryStatusline();
-    if (sl) return { ...sl, ...r };
+    if (sl) return { u: { ...sl, ...note }, throttle };
 
     const cached = await readJsonSafe<AccountUsage>(config.paths.usageCache);
     if (cached) {
@@ -253,12 +274,30 @@ export function createUsagePoller(
       // cycle's note is true, or a red badge would persist forever by
       // round-tripping through the cache file.
       const { error: _e, needsLogin: _n, ...rest } = cached;
-      return { ...rest, stale: true, ...r };
+      return { u: { ...rest, stale: true, ...note }, throttle };
     }
 
     // No numbers ever obtained — updatedAt: 0 (from NONE) is honest;
     // Date.now() here would claim a refresh that never happened.
-    return { ...NONE, ...r };
+    return { u: { ...NONE, ...note }, throttle };
+  }
+
+  // ── Backoff ──────────────────────────────────────────────────────────────────
+  // The usage endpoint rate-limits sporadically (2026-09-04: ~170 lone 429s in
+  // 37h — every one flipped the badge amber and wrote two log lines, and the
+  // very next 60s poll succeeded). On push-back: honour Retry-After, else double
+  // the gap (cap 10 min, ±10% jitter so we stop re-colliding with the CLI's own
+  // polls); any success snaps back to the base cadence. While the numbers on
+  // screen are still recent (< STALE_AFTER_MS, the same bar get() uses) a
+  // throttled cycle keeps them silently — only sustained trouble turns amber.
+  const MAX_BACKOFF_MS = 10 * 60_000;
+  const STALE_AFTER_MS = 5 * baseMs;
+  const THROTTLE_LOG_GAP_MS = 60 * 60_000;
+  let backoffMs = 0; // 0 = healthy cadence
+  let throttleLoggedAt = 0;
+  function nextBackoff(retryAfterMs?: number): number {
+    const want = retryAfterMs !== undefined ? Math.max(retryAfterMs, baseMs) : (backoffMs || baseMs) * 2;
+    return Math.min(MAX_BACKOFF_MS, want);
   }
 
   // Coalesce overlapping calls (interval tick + user "refresh" spam + a slow
@@ -294,8 +333,21 @@ export function createUsagePoller(
     const myGen = ++gen;
     inflightSince = Date.now();
     const p = computeOnce(ac.signal)
-      .then((u0) => {
+      .then(({ u: u0, throttle }) => {
         if (myGen !== gen) return; // abandoned cycle settled late — drop it
+        if (throttle) {
+          backoffMs = nextBackoff(throttle.retryAfterMs);
+          // One line per hour at most: a trace that the endpoint is pushing
+          // back, without the per-blip flood this replaces.
+          if (Date.now() - throttleLoggedAt > THROTTLE_LOG_GAP_MS) {
+            throttleLoggedAt = Date.now();
+            console.warn(`[cc-deck] usage throttled: ${u0.error} — backing off to ${Math.round(backoffMs / 1000)}s`);
+          }
+          // Recent numbers on screen → keep them; the badge stays green.
+          if (last.source === "oauth" && !last.stale && Date.now() - last.updatedAt < STALE_AFTER_MS) return;
+        } else {
+          backoffMs = 0;
+        }
         // Consecutive-red accounting lives inside the guard: a superseded
         // cycle must not reset the strikes a live cycle just earned.
         redStrikes = u0.needsLogin ? redStrikes + 1 : 0;
@@ -327,14 +379,30 @@ export function createUsagePoller(
     return p;
   }
 
+  // A setTimeout chain instead of setInterval so the gap can follow backoffMs.
+  // Only the chain calls scheduleNext (a client's refreshUsage never does), so
+  // there is exactly one pending timer at any time.
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let running = false;
+  function scheduleNext(): void {
+    if (!running) return;
+    if (timer !== null) clearTimeout(timer);
+    const delay = backoffMs > 0 ? Math.round(backoffMs * (0.9 + Math.random() * 0.2)) : baseMs;
+    timer = setTimeout(() => {
+      timer = null;
+      void refreshNow().finally(scheduleNext);
+    }, delay);
+  }
+
   function start(): void {
-    void refreshNow();
-    timer = setInterval(() => void refreshNow(), handlers.intervalMs ?? 60_000);
+    running = true;
+    void refreshNow().finally(scheduleNext);
   }
 
   function stop(): void {
+    running = false;
     if (timer !== null) {
-      clearInterval(timer);
+      clearTimeout(timer);
       timer = null;
     }
   }
@@ -342,7 +410,7 @@ export function createUsagePoller(
   function get(): AccountUsage {
     // hello snapshot: if the last update is ancient (poller dead in a way the
     // watchdog didn't catch), at least show amber "stale", not a healthy badge.
-    const ancient = last.updatedAt > 0 && Date.now() - last.updatedAt > 5 * (handlers.intervalMs ?? 60_000);
+    const ancient = last.updatedAt > 0 && Date.now() - last.updatedAt > STALE_AFTER_MS;
     return ancient ? { ...last, stale: true } : last;
   }
 
