@@ -4,7 +4,6 @@ import path from "node:path";
 const HOME = os.homedir();
 
 export const config = {
-  host: "127.0.0.1",
   port: Number(process.env.CC_DECK_PORT ?? 4317),
 
   /** How often the OAuth usage poller refreshes (ms). */
@@ -40,7 +39,7 @@ export const config = {
 
   /** Known context-window sizes by model family (see util.contextWindowFor). */
   contextWindows: {
-    big: 1_000_000, // Opus 4.6/4.7/4.8, Sonnet 4.6/5, Fable/Mythos 5, or [1m] beta
+    big: 1_000_000, // Opus/Sonnet ≥ 4.6 (incl. 5.x), Fable/Mythos, or [1m] beta
     default: 200_000, // Haiku and older/unknown models
   },
 

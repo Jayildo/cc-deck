@@ -15,19 +15,33 @@ export function initReports(): void {
   genBtn = document.getElementById("report-gen-btn") as HTMLButtonElement;
   const openBtn = document.getElementById("report-btn") as HTMLButtonElement;
   const closeBtn = document.getElementById("report-close") as HTMLButtonElement;
+  const panel = modal.querySelector<HTMLElement>(".report-panel")!;
 
-  openBtn.addEventListener("click", () => {
+  // Move focus into the dialog on open and back to the (only) opener on close.
+  function openModal(): void {
     modal.classList.remove("hidden");
+    panel.focus();
     send({ t: "listReports" });
-  });
-  closeBtn.addEventListener("click", () => modal.classList.add("hidden"));
+  }
+  function closeModal(): void {
+    if (modal.classList.contains("hidden")) return;
+    modal.classList.add("hidden");
+    openBtn.focus();
+  }
+
+  openBtn.addEventListener("click", openModal);
+  closeBtn.addEventListener("click", closeModal);
   genBtn.addEventListener("click", () => send({ t: "generateReport" }));
   modal.addEventListener("click", (e) => {
-    if (e.target === modal) modal.classList.add("hidden");
+    if (e.target === modal) closeModal();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !modal.classList.contains("hidden")) modal.classList.add("hidden");
+    if (e.key === "Escape") closeModal();
   });
+}
+
+export function isReportOpen(): boolean {
+  return !modal.classList.contains("hidden");
 }
 
 export function setReports(ds: string[]): void {

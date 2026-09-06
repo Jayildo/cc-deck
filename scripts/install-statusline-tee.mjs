@@ -35,6 +35,7 @@ const FEED_JSONL = path.join(CC_DECK_DIR, "statusline-feed.jsonl");
 const FEED_TMP = path.join(CC_DECK_DIR, ".feed.tmp");
 
 // Convert Windows path to Git-Bash /c/... form for use in shell commands.
+/** @param {string} p */
 function toGitBash(p) {
   return p.replace(/^([A-Za-z]):/, (_, d) => `/${d.toLowerCase()}`).replaceAll("\\", "/");
 }
@@ -49,12 +50,13 @@ let settings;
 try {
   settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8"));
 } catch (err) {
-  console.error(`ERROR: Cannot read ${SETTINGS_PATH}: ${err.message}`);
+  console.error(`ERROR: Cannot read ${SETTINGS_PATH}: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 }
 
 const current = settings?.statusLine?.command ?? "";
 const statusLineExisted = !!settings.statusLine; // did the user have ANY statusLine config?
+const hadType = typeof settings.statusLine?.type === "string"; // install forces type="command"; uninstall must know whether to keep it
 
 if (current === TEE_CMD) {
   console.log("Already installed — statusLine.command already points to the tee.");
@@ -70,7 +72,7 @@ fs.writeFileSync(SETTINGS_BAK, JSON.stringify(settings, null, 2), "utf8");
 fs.writeFileSync(
   ORIGINAL_JSON,
   JSON.stringify(
-    { command: current, existed: statusLineExisted, savedAt: new Date().toISOString() },
+    { command: current, existed: statusLineExisted, hadType, savedAt: new Date().toISOString() },
     null,
     2
   ),

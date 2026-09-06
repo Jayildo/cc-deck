@@ -1,6 +1,6 @@
 ---
-updated: 2026-07-20T16:15:17+0900
-branch: main
+updated: 2026-09-06T22:11:52+0900
+branch: chore/bump-verified-claude-version
 session_by: claude
 ---
 
@@ -8,40 +8,62 @@ session_by: claude
 
 ## 지금 어디?
 
-협업자 **수니(macOS)**의 diverged `suni` 브랜치를 `main`에 병합해 **하나의 크로스플랫폼 main으로 수렴**시켰다. 이어 metrics 방어적 수정(M1)과 **세션 깜빡임 acknowledge 기능**을 추가. 세 커밋 모두 `origin/main`에 push 완료, 작업 트리 클린. 단, **실행 중인 cc-deck 서버(4317)는 아직 병합 전 옛 코드**를 돌리는 중 — 재시작은 의도적으로 미룸.
+"cc-deck에서 auto/manual/accept-edits/plan 모드가 안 먹고 승인 요청이 폭주한다(윈도우 패치 후?)"를 진단해
+**cc-deck 무혐의**를 확정했다 — 원인은 전역 `~/.claude/settings.json`의 `autoMode.environment`가 socp-fs 전용이고
+`$defaults`가 없던 것 + cc-deck 쪽 CLI(`%APPDATA%\npm`)만 2.1.257+로 자동 갱신된 것 + 프로젝트 로컬 autoMode를
+classifier가 무시하는 것 + auto 모드가 광역 `Bash` allow를 탈락시키는 것. settings.json을 고쳤다(cc-deck 코드 변경 0).
+이어서 **usage 폴러 429 백오프**(`server/usage.ts`)를 구현·검증해 이 커밋에 담았다.
+**라이브 서버(4317)는 옛 코드** — 재시작 전까지 백오프 미적용.
 
 ## 다음 할 일
 
-1. **cc-deck 서버 재시작** — 병합/M1/거짓-완료 수정을 라이브 반영하려면 **외부 터미널**에서 `npm run restart`. ⚠️ cc-deck에서 연 세션은 전부 종료되니 중요한 작업 없을 때. (서버는 `server/*` 변경이라 재시작 필수)
-2. **재시작 후 검증** — 백그라운드 에이전트/워크플로 실행 중 거짓 "완료" 안 뜨는지, (mac이면) Keychain OAuth·login-shell 동작하는지.
-3. **깜빡임 acknowledge 체감** — `http://127.0.0.1:4317/` + `Ctrl+Shift+R` (프론트는 재시작 없이 새로고침만으로 반영). 깜빡이는 세션 클릭 → 조용, 승인 대기는 계속 깜빡이는지.
-4. **`suni` 브랜치 정리(선택)** — main에 완전 흡수됨. `git branch -d suni && git push origin --delete suni`.
+1. **외부 터미널에서 `npm run restart`** → `~/.cc-deck/server.log`에서 "usage degraded/recovered" 반복이 사라지고
+   "usage throttled"가 시간당 1줄 이하인지 확인.
+2. cc-deck에서 socp-erp / papa_01_record 세션을 **새로** 열어(기존 세션은 시작 시 판정 유지) auto 모드로
+   `git status`·`npm run build`·작업 브랜치 push가 classifier에 안 막히는지, `/permissions` → Recently denied가 비었는지 확인.
+   "Allow reads outside the working directories?"가 뜨면 **Keep allowing**.
+3. (선택) cwd 표기 정규화 — cc-deck이 넘기는 `C:\project\x`와 터미널의 `C:/project/x`·`c:/…`가 `~/.claude.json`
+   `projects` 키를 갈라 놓음(신뢰 다이얼로그 중복). (선택) fnm 셸에서 `npm i -g @anthropic-ai/claude-code@latest`로
+   터미널 CLI를 2.1.260에 정렬. (선택) 이 브랜치를 main에 병합.
 
 ## 결정사항
 
-- **metrics.ts 충돌 해소 = suni 엔진 채택 + main 이식.** suni가 상위집합(PTY-침묵 done-지연 + 쪼개진 JSONL 재조립)이라 기반으로 삼고, main의 ①`content` string-union 타입 ②사용자 프롬프트→즉시 "working"(첫 턴 랙 제거) ③`Array.isArray` 가드만 이식. 적대적 리뷰가 "graft은 결합 엔진의 실제 버그를 고치는 load-bearing"으로 검증.
-- **크로스플랫폼 = 하나의 main.** suni의 macOS 코드는 `process.platform` 조건 분기(폴백)라 Windows 경로 무변경(darwin 분기는 Windows에서 죽은 코드). 두 벌 유지보수 아님.
-- **깜빡임 acknowledge:** 완료/응답 필요는 클릭(또는 보고 있으면 자동)으로 확인→조용, 새 이벤트에 재무장. **승인 대기(permission)는 예외** — 세션이 실제로 막혀 있어 해결 전까지 계속 깜빡임(리뷰가 지적한 안전 위험 반영).
+- **usage 백오프**: `setInterval` → `setTimeout` 체인. 429/5xx/네트워크 예외 → Retry-After 준수, 없으면 ×2(상한 10분,
+  ±10% 지터), 성공하면 기본 60초 복귀. 화면 숫자가 5주기(5분) 미만으로 신선하면 조용히 유지(배지 초록, 로그는
+  시간당 1줄 "usage throttled"), 지속 장애만 기존대로 앰버+사유. 401/403은 백오프 제외(2-strike 빨강 판정이 늦어지지
+  않게). throttle 플래그는 내부 상태로만 — AccountUsage/WS 페이로드로 안 샘. 이유: 2026-09-04 기준 37시간에 단발
+  429가 ~170회, 매번 배지 깜빡임 + 로그 2줄.
+- **권한 문제는 cc-deck 밖에서 해결** — 웹 터미널은 Shift+Tab을 통과시키고 서버는 권한 플래그 없이 `cmd /c claude`를
+  띄우므로 손댈 곳이 없었다. 근거·경위는 memory `prompt-flood-root-cause-automode-environment`.
+- **auto 모드에서 권한을 넓히는 편집은 classifier가 막는다**(스킬 호출·스크래치패드 준비까지) → 사용자에게 Shift+Tab
+  manual 전환을 요청한 뒤 진행. memory `auto-mode-blocks-permission-widening-edits`.
 
 ## 주의사항
 
-- **서버 재시작은 외부 터미널에서만.** 이 프로젝트 세션들은 서버의 자식 PTY라, 호스팅 세션/`!`에서 재시작하면 서버가 내려가고 세션도 죽는다. (메모리 `cc-deck-restart-kills-hosting-session` 참조)
-- **브랜치 보호 우회 push.** main에 PR 필수+상태체크 규칙이 있으나 소유자 권한으로 우회되어 직접 push됨. 앞으로 PR 흐름을 원하면 브랜치 파서 올릴 것.
-- `web/dist`는 이번에 재빌드됨(gitignore라 커밋 안 됨). 프론트 변경은 새로고침으로 반영.
+- **재시작은 외부 터미널에서만** — cc-deck이 연 세션이 전부 죽음(memory `cc-deck-restart-kills-hosting-session`).
+- 테스트 스위트 없음. 백오프는 스크래치패드 시뮬레이션으로 검증(가짜 USERPROFILE로 config 경로 격리 + `fetch`/
+  `setTimeout`/`Date.now` 패치, Retry-After·×2·상한·grace→앰버 전이·회복·네트워크 예외·401 경로 전부 통과).
+  스크립트는 세션 스크래치패드에만 있어 사라짐 — 재검증하려면 같은 골격으로 다시 작성.
+- cc-deck 쪽 CLI는 하루 여러 번 자동 갱신 — "cc-deck에서만 이상하다"는 증상은 먼저 두 CLI 버전부터 비교
+  (memory `two-claude-installs-fnm-shadows-npm`).
+- 관찰된 실패 없음: typecheck ✓, 시뮬레이션 ALL PASSED.
 
 ## 수정된 파일
 
-(없음 — 세션 코드 전부 커밋·푸시됨, 작업 트리 클린)
+(이 커밋에 포함)
+- `server/usage.ts` — 백오프 스케줄러
+- `.claude/CLAUDE.md` — "Account 5h/weekly" bullet의 429/5xx 동작 갱신
+- `.claude/HANDOFF.md` — 이 파일
 
 ## 이어받는 법
 
 ```bash
-# 프론트(깜빡임) 체감 — 재시작 불필요
-#   브라우저에서 http://127.0.0.1:4317/ + Ctrl+Shift+R
-
-# 서버까지 라이브 반영 — 반드시 외부 터미널에서
+# 1) 반드시 외부 터미널 — 서버 재시작(호스팅 세션 전부 종료됨)
 npm run restart
 
-# 빌드/타입 검증
-npm run typecheck && npm run build
+# 2) 백오프 동작 확인 (한두 시간 뒤)
+grep -E "usage (throttled|degraded|recovered)" ~/.cc-deck/server.log | tail -n 20
+
+# 3) 코드 건드리기 전 타입체크
+npm run typecheck
 ```

@@ -16,6 +16,16 @@ export function fmtDuration(ms: number): string {
   return `${s}s`;
 }
 
+/** Elapsed ms -> "방금" / "12분 전" / "3시간 전" / "2일 전" */
+export function fmtAge(ms: number): string {
+  const m = Math.floor(ms / 60_000);
+  if (m < 1) return "방금";
+  if (m < 60) return `${m}분 전`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}시간 전`;
+  return `${Math.floor(h / 24)}일 전`;
+}
+
 /** Strip "claude-" prefix from a model id for compact display. */
 export function shortModel(model: string | undefined): string {
   if (!model) return "—";

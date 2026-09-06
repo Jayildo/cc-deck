@@ -9,6 +9,25 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Custom-port installs pin CC_DECK_PORT inside the launcher written by
+// install-autostart; read it back so `npm run restart` finds the right listener
+// without the env var being set in this shell.
+function resolvePort() {
+  if (process.env.CC_DECK_PORT) return process.env.CC_DECK_PORT;
+  const launcher = path.join(
+    os.homedir(),
+    ".cc-deck",
+    process.platform === "win32" ? "run-server.cmd" : "run-server.sh"
+  );
+  try {
+    const m = fs.readFileSync(launcher, "utf8").match(/CC_DECK_PORT="?(\d+)"?/);
+    if (m?.[1]) return m[1];
+  } catch {
+    /* no managed launcher */
+  }
+  return "4317";
+}
+
 if (process.platform === "win32") {
   restartWindows();
 } else if (process.platform === "darwin") {
@@ -19,7 +38,7 @@ if (process.platform === "win32") {
 }
 
 function restartWindows() {
-  const PORT = process.env.CC_DECK_PORT ?? "4317";
+  const PORT = resolvePort();
 
   let pid = null;
   try {
@@ -48,7 +67,10 @@ function restartWindows() {
     console.log(`no server listening on :${PORT}`);
   }
 
-  const vbs = path.join(
+  // Prefer the server-only launcher (newer install:autostart writes it); the
+  // Startup .vbs also runs the opener → a fresh Chrome tab on every restart.
+  const serverVbs = path.join(os.homedir(), ".cc-deck", "run-server.vbs");
+  const startupVbs = path.join(
     process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"),
     "Microsoft",
     "Windows",
@@ -59,9 +81,13 @@ function restartWindows() {
   );
 
   function relaunch() {
-    if (fs.existsSync(vbs)) {
+    const vbs = fs.existsSync(serverVbs) ? serverVbs : fs.existsSync(startupVbs) ? startupVbs : null;
+    if (vbs) {
       spawn("wscript", [vbs], { detached: true, stdio: "ignore", windowsHide: true }).unref();
       console.log(`relaunched hidden server → http://localhost:${PORT}`);
+      if (vbs === startupVbs) {
+        console.log("(re-run `npm run install:autostart` for a restart launcher that doesn't open a new tab)");
+      }
     } else {
       console.log("autostart .vbs not found — run `npm run install:autostart` first, or `npm start`.");
     }
@@ -73,24 +99,29 @@ function restartWindows() {
 }
 
 function restartDarwin() {
-  const PORT = process.env.CC_DECK_PORT ?? "4317";
+  const PORT = resolvePort();
 
-  let pid = null;
+  // -sTCP:LISTEN — plain `lsof -ti tcp:PORT` also lists client sockets on the
+  // port (the dashboard's browser WS, a curl probe), so [0] could be Chrome.
+  /** @type {string[]} */
+  let pids = [];
   try {
-    const out = execSync(`lsof -ti tcp:${PORT}`, { encoding: "utf8" }).trim();
-    if (out) pid = out.split("\n")[0]?.trim() ?? null;
+    const out = execSync(`lsof -ti tcp:${PORT} -sTCP:LISTEN`, { encoding: "utf8" });
+    pids = out.split("\n").map((s) => s.trim()).filter((p) => /^\d+$/.test(p));
   } catch {
-    /* nothing listening, or lsof unavailable */
+    /* nothing listening (lsof exits non-zero), or lsof unavailable */
   }
 
   let killed = false;
-  if (pid && /^\d+$/.test(pid)) {
-    try {
-      execSync(`kill -9 ${pid}`, { stdio: "ignore" });
-      console.log(`stopped server (pid ${pid}) on :${PORT}`);
-      killed = true;
-    } catch {
-      console.log(`could not stop pid ${pid}`);
+  if (pids.length > 0) {
+    for (const pid of pids) {
+      try {
+        execSync(`kill -9 ${pid}`, { stdio: "ignore" });
+        console.log(`stopped server (pid ${pid}) on :${PORT}`);
+        killed = true;
+      } catch {
+        console.log(`could not stop pid ${pid}`);
+      }
     }
   } else {
     console.log(`no server listening on :${PORT}`);

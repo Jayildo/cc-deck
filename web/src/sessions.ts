@@ -1,4 +1,4 @@
-import type { SessionMeta, SessionMetrics } from "../../shared/types";
+import type { SessionMeta, SessionMetrics, SessionStatus } from "../../shared/types";
 import { fmtNum } from "./fmt.js";
 import { send } from "./ws.js";
 
@@ -22,6 +22,12 @@ export function initSessions(el: HTMLElement, select: SelectCb, enter: SelectCb)
   onSelect = select;
   onEnter = enter;
   listEl.tabIndex = 0; // focusable so it can own keyboard navigation
+  // Expose the arrow-key list as a real listbox so screen readers announce it as a
+  // set of selectable options and report which one is active (aria-activedescendant,
+  // set per-render). Rows carry role=option + aria-selected.
+  listEl.setAttribute("role", "listbox");
+  listEl.setAttribute("aria-label", "세션 목록");
+  listEl.setAttribute("aria-orientation", "vertical");
   listEl.addEventListener("keydown", onKeydown);
 }
 
@@ -107,6 +113,8 @@ export function updateSessions(list: SessionMeta[]): void {
   // unbounded across a long-lived dashboard.
   const live = new Set(list.map((s) => s.id));
   for (const id of acked.keys()) if (!live.has(id)) acked.delete(id);
+  // Same for cached metrics, or metricsMap grows by every session ever opened.
+  for (const id of metricsMap.keys()) if (!live.has(id)) metricsMap.delete(id);
   renderAll();
 }
 
@@ -131,10 +139,9 @@ export function setSelectedSession(id: string): void {
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
-const DOT_CLASS: Record<string, string> = {
+const DOT_CLASS: Record<SessionStatus, string> = {
   starting: "dot dot-starting",
   active: "dot dot-active",
-  idle: "dot dot-idle",
   exited: "dot dot-exited",
 };
 
@@ -191,21 +198,93 @@ function acknowledge(id: string): void {
   else acked.delete(id);
 }
 
+// Reconcile the DOM list against `sessions` IN PLACE — update the rows that stayed,
+// insert new ones, remove gone ones — instead of tearing the whole list down. The old
+// `innerHTML = ""` rebuild recreated every node on every sessions/selection/cursor
+// tick, which restarted each row's CSS blink at 0%; so one session's trivial change
+// visibly interrupted the 완료/응답/승인 blink of all the others. Reusing nodes lets a
+// blink keep its phase — the animation only (re)starts when a row's attention class
+// actually changes, which is exactly a genuinely new event.
 function renderAll(): void {
-  listEl.innerHTML = "";
-  for (const s of sessions) {
-    listEl.appendChild(buildRow(s));
+  const existing = new Map<string, HTMLElement>();
+  for (const el of Array.from(listEl.children) as HTMLElement[]) {
+    const sid = el.getAttribute("data-sid");
+    if (sid) existing.set(sid, el);
   }
+  // Remove rows for gone sessions FIRST so the survivors line up with `ref` in the
+  // pass below and aren't needlessly moved: removing a middle row late would leave it
+  // occupying a slot, forcing every row after it through insertBefore — and a move
+  // restarts that row's blink even though nothing about it actually changed.
+  const live = new Set(sessions.map((s) => s.id));
+  for (const [sid, el] of existing) {
+    if (!live.has(sid)) {
+      el.remove();
+      existing.delete(sid);
+    }
+  }
+  let ref: Node | null = listEl.firstChild;
+  for (const s of sessions) {
+    let el = existing.get(s.id);
+    if (el) {
+      updateRow(el, s);
+    } else {
+      el = buildRow(s);
+    }
+    if (el === ref) {
+      ref = el.nextSibling; // already in the right slot — advance past it
+    } else {
+      listEl.insertBefore(el, ref); // new row, or a reordered one, moved into place
+    }
+  }
+  // Keep the listbox's active descendant on the keyboard-cursor row, but only while
+  // that session still exists — otherwise clear it, so we never point at a removed
+  // node (a dangling IDREF loses the active option for screen readers). Stale cursorId
+  // self-heals on the next moveCursor/focusSidebar.
+  if (cursorId != null && live.has(cursorId))
+    listEl.setAttribute("aria-activedescendant", `session-opt-${cursorId}`);
+  else listEl.removeAttribute("aria-activedescendant");
 }
 
+// A single session's metrics changed — patch just its row, in place (see renderAll).
 function patchRow(id: string): void {
-  const existing = listEl.querySelector<HTMLElement>(`[data-sid="${id}"]`);
+  const el = listEl.querySelector<HTMLElement>(`[data-sid="${id}"]`);
   const s = sessions.find((x) => x.id === id);
-  if (!s || !existing) return;
-  existing.replaceWith(buildRow(s));
+  if (s && el) updateRow(el, s);
 }
 
+// Build a row's stable skeleton once; all per-render values are filled by updateRow
+// so the node can be reused across renders without restarting its animations.
 function buildRow(s: SessionMeta): HTMLElement {
+  const el = document.createElement("div");
+  el.setAttribute("data-sid", s.id);
+  el.id = `session-opt-${s.id}`;
+  el.setAttribute("role", "option");
+  el.innerHTML = `
+    <div class="row-header">
+      <span data-dot></span>
+      <span class="row-title"></span>
+      <span class="row-tokens"></span>
+      <button class="close-btn" title="Close" aria-label="세션 닫기" tabindex="-1">×</button>
+    </div>
+    <div data-act><span class="act-led"></span><span class="act-label"></span></div>
+  `;
+  el.querySelector(".close-btn")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    send({ t: "close", id: s.id });
+  });
+  el.addEventListener("click", () => {
+    cursorId = s.id; // clicking also parks the keyboard cursor here
+    onSelect(s.id);
+  });
+  updateRow(el, s);
+  return el;
+}
+
+// Update a row's mutable state in place, touching only what actually changed, so an
+// unchanged (still-blinking) row is left completely alone and its animation phase
+// survives. Text is written via textContent / the title property, so there's no
+// HTML-injection surface — no manual escaping needed.
+function updateRow(el: HTMLElement, s: SessionMeta): void {
   const m = metricsMap.get(s.id);
   const c = m?.cumulative;
   const total = c ? fmtNum(c.total) : "—";
@@ -221,13 +300,11 @@ function buildRow(s: SessionMeta): HTMLElement {
   const isSelected = s.id === selectedId;
   const isCursor = s.id === cursorId;
 
-  // Mark sessions that need the user so the row blinks for attention until it's
-  // acknowledged: choice ("응답 필요", blue) · finished ("완료", green). The blink stops
-  // once the row has been selected once (`acked`) and stays off until a new
-  // attention event; working sessions never blink. A permission block ("승인 대기",
-  // red) is EXEMPT — the session is halted until the user acts, so it keeps blinking
-  // until it clears (never silenced by acknowledgement). The activity badge itself
-  // is unaffected — only the row-level blink. (see .row-* CSS)
+  // Row blinks for attention until acknowledged: choice ("응답 필요", blue) · finished
+  // ("완료", green). The blink stops once the row is selected once (`acked`) and stays
+  // off until a new attention event; working sessions never blink. A permission block
+  // ("승인 대기", red) is EXEMPT — the session is halted until the user acts, so it keeps
+  // blinking until it clears. Only the row-level blink; the badge is unaffected. (.row-* CSS)
   const attn = attnFromCls(act.cls);
   const blink =
     attn !== null && !isSelected && (attn === "permission" || acked.get(s.id) !== attn);
@@ -238,32 +315,24 @@ function buildRow(s: SessionMeta): HTMLElement {
       : attn === "done"
         ? " row-done"
         : " row-choice";
-  const el = document.createElement("div");
-  el.className =
-    `session-row${isSelected ? " selected" : ""}${isCursor ? " cursor" : ""}${attnClass}`;
-  el.setAttribute("data-sid", s.id);
-  el.innerHTML = `
-    <div class="row-header">
-      <span class="${dotClass}"></span>
-      <span class="row-title">${esc(s.title)}</span>
-      <span class="row-tokens" title="${esc(tip)}">${total}</span>
-      <button class="close-btn" title="Close">×</button>
-    </div>
-    <div class="act ${act.cls}"><span class="act-led"></span><span class="act-label">${act.label}</span></div>
-  `;
 
-  el.querySelector(".close-btn")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    send({ t: "close", id: s.id });
-  });
-  el.addEventListener("click", () => {
-    cursorId = s.id; // clicking also parks the keyboard cursor here
-    onSelect(s.id);
-  });
+  const cls = `session-row${isSelected ? " selected" : ""}${isCursor ? " cursor" : ""}${attnClass}`;
+  if (el.className !== cls) el.className = cls; // reassigning the same class list would restart the blink
+  el.setAttribute("aria-selected", String(isSelected));
 
-  return el;
-}
+  const dotEl = el.querySelector<HTMLElement>("[data-dot]")!;
+  if (dotEl.className !== dotClass) dotEl.className = dotClass;
 
-function esc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const titleEl = el.querySelector<HTMLElement>(".row-title")!;
+  if (titleEl.textContent !== s.title) titleEl.textContent = s.title;
+
+  const tokEl = el.querySelector<HTMLElement>(".row-tokens")!;
+  if (tokEl.textContent !== total) tokEl.textContent = total;
+  if (tokEl.title !== tip) tokEl.title = tip;
+
+  const actEl = el.querySelector<HTMLElement>("[data-act]")!;
+  const actCls = `act ${act.cls}`;
+  if (actEl.className !== actCls) actEl.className = actCls;
+  const labelEl = actEl.querySelector<HTMLElement>(".act-label")!;
+  if (labelEl.textContent !== act.label) labelEl.textContent = act.label;
 }
